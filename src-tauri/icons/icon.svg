@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Lootbox app icon">
+  <rect width="512" height="512" rx="112" fill="#17181b"/>
+  <path
+    d="M108 186 256 108l148 78-148 80-148-80Zm0 0v158l148 80 148-80V186M256 266v158"
+    fill="none"
+    stroke="#d1a454"
+    stroke-width="28"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

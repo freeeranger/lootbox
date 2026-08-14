@@ -1,0 +1,30 @@
+[package]
+name = "lootbox"
+version = "0.4.0"
+description = "A quiet, local-first browser for game assets"
+authors = ["Lootbox contributors"]
+edition = "2021"
+
+[lib]
+name = "lootbox_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.38", features = ["bundled", "backup"] }
+walkdir = "2"
+imagesize = "0.14"
+image = { version = "0.25", default-features = false, features = ["bmp", "dds", "gif", "hdr", "jpeg", "png", "tga", "tiff", "webp"] }
+thiserror = "2"
+base64 = "0.22"
+rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "vorbis", "wav"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

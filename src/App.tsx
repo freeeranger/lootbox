@@ -1,0 +1,2138 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertCircle,
+  Activity,
+  ArchiveRestore,
+  ArrowUpDown,
+  Check,
+  Copy,
+  DatabaseBackup,
+  ExternalLink,
+  FolderCog,
+  FolderOpen,
+  FolderPlus,
+  Gamepad2,
+  HardDrive,
+  SlidersHorizontal,
+  Grid2X2,
+  List,
+  LoaderCircle,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  SearchX,
+  Trash2,
+  X,
+} from "lucide-react";
+import { api } from "./api";
+import { AssetCard } from "./components/AssetCard";
+import { DetailPanel } from "./components/DetailPanel";
+import { EmptyState } from "./components/EmptyState";
+import { Sidebar } from "./components/Sidebar";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { ButtonGroup } from "@/components/ui/button-group";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { cn } from "@/lib/utils";
+import { toggleAudioPlayback } from "./audioPlayback";
+import type {
+  Asset,
+  AssetQuery,
+  AssetSort,
+  AssetSortDirection,
+  AssetType,
+  ImportProgress,
+  FilterOptions,
+  LibrarySelection,
+  LibrarySnapshot,
+  PackSummary,
+  ProjectSummary,
+} from "./types";
+
+const emptySnapshot: LibrarySnapshot = {
+  totalAssets: 0,
+  duplicateAssets: 0,
+  hashingAssets: false,
+  packs: [],
+  collections: [],
+  projects: [],
+  typeCounts: [],
+};
+const emptyFilterOptions: FilterOptions = { extensions: [], mapRoles: [], tags: [] };
+
+const assetPageSize = 160;
+const searchDebounceMs = 300;
+const clearedFilters = { extension: "", mapRole: "", tag: "", minWidth: "", minConfidence: "", status: "" };
+type AssetFilters = typeof clearedFilters;
+
+const typeLabels: Record<AssetType, string> = {
+  image: "Images",
+  texture: "Textures",
+  audio: "Audio",
+  model: "Models",
+  video: "Video",
+  font: "Fonts",
+  shader: "Shaders",
+  material: "Materials",
+  archive: "Archives",
+  other: "Other",
+};
+
+const sortLabels: Record<AssetSort, string> = {
+  name: "Name",
+  newest: "Date modified",
+  largest: "File size",
+  type: "Type",
+};
+
+function sortDirectionLabel(sort: AssetSort, direction: AssetSortDirection) {
+  if (sort === "name") return direction === "asc" ? "A–Z" : "Z–A";
+  if (sort === "newest") return direction === "desc" ? "Newest first" : "Oldest first";
+  if (sort === "largest") return direction === "desc" ? "Largest first" : "Smallest first";
+  return direction === "asc" ? "Type A–Z" : "Type Z–A";
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index];
+  }
+  return `${value.toFixed(value < 10 ? 1 : 0)} ${unit}`;
+}
+
+function savedPanelWidth(key: string, fallback: number, minimum: number, maximum: number) {
+  const value = Number(window.localStorage.getItem(key));
+  return Number.isFinite(value) && value >= minimum && value <= maximum ? value : fallback;
+}
+
+function isTypingTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement &&
+    (target.matches("input, textarea, select") ||
+      target.isContentEditable ||
+      Boolean(target.closest("[data-slot=dialog-content], [data-slot=alert-dialog-content], [data-slot=select-content], [data-slot=dropdown-menu-content], [data-slot=context-menu-content]")));
+}
+
+function AssetSearch({
+  inputRef,
+  onQueryChange,
+}: {
+  inputRef: RefObject<HTMLInputElement | null>;
+  onQueryChange: (query: string) => void;
+}) {
+  const [value, setValue] = useState("");
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => onQueryChange(value.trim()),
+      searchDebounceMs,
+    );
+    return () => window.clearTimeout(timer);
+  }, [onQueryChange, value]);
+
+  function clear() {
+    setValue("");
+    onQueryChange("");
+    inputRef.current?.focus();
+  }
+
+  return (
+    <div className="relative w-full max-w-xl">
+      <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        ref={inputRef}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && value) {
+            event.preventDefault();
+            clear();
+          }
+        }}
+        placeholder="Search names, paths, packs, and tags"
+        aria-label="Search assets"
+        className="h-9 rounded-md bg-muted/20 pr-8 pl-9 text-xs"
+      />
+      {value && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="absolute top-1/2 right-1 size-6 -translate-y-1/2 rounded-sm text-muted-foreground"
+          onClick={clear}
+          aria-label="Clear search"
+        >
+          <X />
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  placeholder,
+  options,
+  onValueChange,
+  className,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  options: Array<{ value: string; label: string }>;
+  onValueChange: (value: string) => void;
+  className?: string;
+}) {
+  const items = [{ value: "__all", label: placeholder }, ...options];
+  return (
+    <label className={cn("block min-w-0", className)}>
+      <span className="mb-1.5 block text-[11px] font-medium text-muted-foreground">{label}</span>
+      <Select
+        items={items}
+        value={value || "__all"}
+        onValueChange={(next) => onValueChange(next === "__all" || next === null ? "" : next)}
+      >
+        <SelectTrigger aria-label={label} className="w-full text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent alignItemWithTrigger={false} align="start">
+          <SelectGroup>
+            {items.map((item) => (
+              <SelectItem key={item.value} value={item.value} className="text-xs">
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </label>
+  );
+}
+
+function App() {
+  const queryClient = useQueryClient();
+  const [selection, setSelection] = useState<LibrarySelection>({ kind: "all" });
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [view, setView] = useState<"grid" | "list">("grid");
+  const [sort, setSort] = useState<AssetSort>(() => {
+    const saved = window.localStorage.getItem("lootbox:asset-sort");
+    return saved === "newest" || saved === "largest" || saved === "type"
+      ? saved
+      : "name";
+  });
+  const [sortDirection, setSortDirection] = useState<AssetSortDirection>(() => {
+    const saved = window.localStorage.getItem("lootbox:asset-sort-direction");
+    if (saved === "asc" || saved === "desc") return saved;
+    const savedSort = window.localStorage.getItem("lootbox:asset-sort");
+    return savedSort === "newest" || savedSort === "largest" ? "desc" : "asc";
+  });
+  const [importing, setImporting] = useState(false);
+  const [pendingImportCount, setPendingImportCount] = useState(0);
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
+  const [activeImportJobId, setActiveImportJobId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [undoRemoval, setUndoRemoval] = useState<{ ids: number[]; label: string } | null>(null);
+  const [creatingCollection, setCreatingCollection] = useState(false);
+  const [addSelectionToNewCollection, setAddSelectionToNewCollection] = useState(false);
+  const [collectionName, setCollectionName] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmAssetRemoval, setConfirmAssetRemoval] = useState<Asset[]>([]);
+  const [confirmProjectRemoval, setConfirmProjectRemoval] = useState<ProjectSummary | null>(null);
+  const [confirmPurge, setConfirmPurge] = useState<PackSummary | null>(null);
+  const [pendingRestorePath, setPendingRestorePath] = useState<string | null>(null);
+  const [confirmClearCache, setConfirmClearCache] = useState(false);
+  const [renamingPack, setRenamingPack] = useState<PackSummary | null>(null);
+  const [packName, setPackName] = useState("");
+  const [filters, setFilters] = useState<AssetFilters>({ ...clearedFilters });
+  const [filterDraft, setFilterDraft] = useState<AssetFilters>({ ...clearedFilters });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const assetScrollRef = useRef<HTMLDivElement>(null);
+  const selectedIdsRef = useRef<Set<number>>(new Set());
+  const selectedIdRef = useRef<number | null>(null);
+  const selectedAssetCacheRef = useRef<Map<number, Asset>>(new Map());
+  const selectedPathCacheRef = useRef<Map<number, string>>(new Map());
+  const assetsRef = useRef<Asset[]>([]);
+  const selectionAnchorRef = useRef<number | null>(null);
+  const pendingImportCountRef = useRef(0);
+  const importJobsRef = useRef(new Set<string>());
+  const [assetViewportWidth, setAssetViewportWidth] = useState(0);
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(() =>
+    savedPanelWidth(
+      "lootbox:left-panel-width",
+      window.innerWidth >= 1280 ? 220 : 208,
+      168,
+      320,
+    ),
+  );
+  const [rightPanelWidth, setRightPanelWidth] = useState(() =>
+    savedPanelWidth(
+      "lootbox:right-panel-width",
+      window.innerWidth >= 1280 ? 340 : 320,
+      260,
+      480,
+    ),
+  );
+
+  const query = useMemo<AssetQuery>(() => {
+    const next: AssetQuery = { query: debouncedSearch, sort, sortDirection };
+    if (selection.kind === "type") next.assetType = selection.assetType;
+    if (selection.kind === "pack") next.packId = selection.packId;
+    if (selection.kind === "removed") {
+      next.packId = selection.packId;
+      next.excluded = true;
+    }
+    if (selection.kind === "missing") {
+      next.packId = selection.packId;
+      next.missing = true;
+    }
+    if (selection.kind === "collection") next.collectionId = selection.collectionId;
+    if (selection.kind === "duplicates") next.duplicatesOnly = true;
+    if (selection.kind === "project") next.projectId = selection.projectId;
+    if (filters.extension) next.extension = filters.extension;
+    if (filters.mapRole) next.mapRole = filters.mapRole;
+    if (filters.tag) next.tag = filters.tag;
+    if (filters.minWidth) {
+      next.minWidth = Number(filters.minWidth);
+      next.minHeight = Number(filters.minWidth);
+    }
+    if (filters.minConfidence) next.minConfidence = Number(filters.minConfidence);
+    if (filters.status === "missing") next.missing = true;
+    return next;
+  }, [debouncedSearch, filters, selection, sort, sortDirection]);
+  const selectionScopeKey = useMemo(
+    () => JSON.stringify({ debouncedSearch, filters, selection }),
+    [debouncedSearch, filters, selection],
+  );
+  const previousSelectionScopeRef = useRef(selectionScopeKey);
+  const selectionScopeKeyRef = useRef(selectionScopeKey);
+  selectionScopeKeyRef.current = selectionScopeKey;
+
+  const snapshotQuery = useQuery({
+    queryKey: ["library-snapshot"],
+    queryFn: api.snapshot,
+    initialData: emptySnapshot,
+    refetchInterval: (current) => current.state.data?.hashingAssets ? 1000 : false,
+  });
+  const filterOptionsQuery = useQuery({
+    queryKey: ["filter-options"],
+    queryFn: api.filterOptions,
+    initialData: emptyFilterOptions,
+  });
+  const cacheStatusQuery = useQuery({
+    queryKey: ["cache-status"],
+    queryFn: api.cacheStatus,
+    enabled: settingsOpen,
+  });
+  const diagnosticsQuery = useQuery({
+    queryKey: ["diagnostics"],
+    queryFn: api.diagnostics,
+    enabled: settingsOpen,
+  });
+  const assetPagesQuery = useInfiniteQuery({
+    queryKey: ["assets", query],
+    queryFn: ({ pageParam }) => api.assets({
+      ...query,
+      limit: assetPageSize,
+      offset: pageParam,
+    }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, pages) => lastPage.hasMore
+      ? pages.reduce((total, page) => total + page.items.length, 0)
+      : undefined,
+    placeholderData: (previous) => previous,
+  });
+  const snapshot = snapshotQuery.data;
+  const filterOptions = filterOptionsQuery.data;
+  const cacheStatus = cacheStatusQuery.data ?? null;
+  const diagnostics = diagnosticsQuery.data ?? [];
+  const assets = useMemo(
+    () => assetPagesQuery.data?.pages.flatMap((page) => page.items) ?? [],
+    [assetPagesQuery.data],
+  );
+  const assetTotal = assetPagesQuery.data?.pages[0]?.total ?? 0;
+  const hasMoreAssets = Boolean(assetPagesQuery.hasNextPage);
+  const loadingMore = assetPagesQuery.isFetchingNextPage;
+  const loading = assetPagesQuery.isPending ||
+    (assetPagesQuery.isFetching && !assetPagesQuery.isFetchingNextPage);
+
+  assetsRef.current = assets;
+  const selectedAsset = useMemo(() => {
+    if (selectedId === null) return null;
+    return assets.find((asset) => asset.id === selectedId) ??
+      selectedAssetCacheRef.current.get(selectedId) ?? null;
+  }, [assets, selectedId]);
+  const selectedAssets = useMemo(() => [...selectedIds].flatMap((id) => {
+    const asset = assets.find((candidate) => candidate.id === id) ??
+      selectedAssetCacheRef.current.get(id);
+    return asset ? [asset] : [];
+  }), [assets, selectedIds]);
+  const selectedDragPaths = useMemo(
+    () => [...selectedIds].flatMap((id) => {
+      const path = selectedPathCacheRef.current.get(id);
+      return path ? [path] : [];
+    }),
+    [selectedIds],
+  );
+  const layoutLeftPanelWidth = Math.min(leftPanelWidth, windowWidth < 1100 ? 200 : 320);
+  const layoutRightPanelWidth = Math.min(
+    rightPanelWidth,
+    Math.max(260, windowWidth - layoutLeftPanelWidth - 480),
+  );
+
+  const applyAssetSelection = useCallback((ids: Set<number>, activeId: number | null) => {
+    const nextCache = new Map(
+      [...selectedAssetCacheRef.current].filter(([id]) => ids.has(id)),
+    );
+    for (const asset of assetsRef.current) {
+      if (ids.has(asset.id)) nextCache.set(asset.id, asset);
+    }
+    const nextPathCache = new Map(
+      [...selectedPathCacheRef.current].filter(([id]) => ids.has(id)),
+    );
+    for (const asset of assetsRef.current) {
+      if (ids.has(asset.id)) nextPathCache.set(asset.id, asset.absolutePath);
+    }
+    selectedAssetCacheRef.current = nextCache;
+    selectedPathCacheRef.current = nextPathCache;
+    selectedIdsRef.current = ids;
+    selectedIdRef.current = activeId;
+    setSelectedIds(ids);
+    setSelectedId(activeId);
+  }, []);
+
+  const clearAssetSelection = useCallback(() => {
+    selectionAnchorRef.current = null;
+    selectedAssetCacheRef.current.clear();
+    selectedPathCacheRef.current.clear();
+    applyAssetSelection(new Set(), null);
+  }, [applyAssetSelection]);
+  const selectedPack = useMemo(
+    () =>
+      selection.kind === "pack" || selection.kind === "removed" || selection.kind === "missing"
+        ? snapshot.packs.find((pack) => pack.id === selection.packId) ?? null
+        : null,
+    [selection, snapshot.packs],
+  );
+  const selectedProject = useMemo(
+    () => selection.kind === "project"
+      ? snapshot.projects.find((project) => project.id === selection.projectId) ?? null
+      : null,
+    [selection, snapshot.projects],
+  );
+  const activeFilters = useMemo(() => {
+    const labels: Record<keyof typeof filters, (value: string) => string> = {
+      extension: (value) => `Format .${value}`,
+      mapRole: (value) => `Map ${value.replaceAll("_", " ")}`,
+      tag: (value) => `Tag ${value}`,
+      minWidth: (value) => `${value} × ${value}+`,
+      minConfidence: (value) => `Confidence ≤ ${value}%`,
+      status: () => "Missing files",
+    };
+    return (Object.entries(filters) as Array<[keyof typeof filters, string]>)
+      .filter(([, value]) => Boolean(value))
+      .map(([key, value]) => ({ key, label: labels[key](value) }));
+  }, [filters]);
+
+  const reportError = useCallback((caught: unknown, context = "ui") => {
+    const message = errorMessage(caught);
+    setError(message);
+    void api.logDiagnostic("error", context, message);
+  }, []);
+  const loadSnapshot = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ["library-snapshot"], exact: true });
+  }, [queryClient]);
+
+  useEffect(() => {
+    void api.hashLibrary().then(loadSnapshot).catch((caught) => reportError(caught, "content-hashing"));
+  }, [loadSnapshot, reportError]);
+
+  const serverQueryError = snapshotQuery.error ?? filterOptionsQuery.error ??
+    assetPagesQuery.error ?? cacheStatusQuery.error ?? diagnosticsQuery.error;
+  useEffect(() => {
+    if (serverQueryError) reportError(serverQueryError, "server-query");
+  }, [reportError, serverQueryError]);
+
+  useEffect(() => {
+    if (error) void api.logDiagnostic("error", "ui", error);
+  }, [error]);
+
+  useEffect(() => {
+    if (!notice || error) return;
+    const timer = window.setTimeout(() => {
+      setNotice(null);
+      setUndoRemoval(null);
+    }, undoRemoval ? 10_000 : 4_000);
+    return () => window.clearTimeout(timer);
+  }, [error, notice, undoRemoval]);
+
+  const refresh = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["library-snapshot"] }),
+      queryClient.invalidateQueries({ queryKey: ["assets"] }),
+      queryClient.invalidateQueries({ queryKey: ["filter-options"] }),
+    ]);
+  }, [queryClient]);
+
+  useEffect(() => {
+    window.localStorage.setItem("lootbox:left-panel-width", String(leftPanelWidth));
+  }, [leftPanelWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem("lootbox:right-panel-width", String(rightPanelWidth));
+  }, [rightPanelWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem("lootbox:asset-sort", sort);
+  }, [sort]);
+
+  useEffect(() => {
+    window.localStorage.setItem("lootbox:asset-sort-direction", sortDirection);
+  }, [sortDirection]);
+
+  function clampPanelWidth(side: "left" | "right", width: number) {
+    const otherWidth = side === "left" ? rightPanelWidth : leftPanelWidth;
+    const minimum = side === "left" ? 168 : 260;
+    const preferredMaximum = side === "left" ? 320 : 480;
+    const availableMaximum = window.innerWidth - otherWidth - 368;
+    return Math.max(minimum, Math.min(width, preferredMaximum, availableMaximum));
+  }
+
+  function startPanelResize(side: "left" | "right", event: React.PointerEvent) {
+    event.preventDefault();
+    const previousCursor = document.body.style.cursor;
+    const previousSelection = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const move = (nextEvent: PointerEvent) => {
+      const width = side === "left" ? nextEvent.clientX : window.innerWidth - nextEvent.clientX;
+      if (side === "left") setLeftPanelWidth(clampPanelWidth(side, width));
+      else setRightPanelWidth(clampPanelWidth(side, width));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelection;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  }
+
+  function resizePanelWithKeyboard(side: "left" | "right", event: React.KeyboardEvent) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    if (side === "left") {
+      setLeftPanelWidth((width) => clampPanelWidth(side, width + direction * 12));
+    } else {
+      setRightPanelWidth((width) => clampPanelWidth(side, width - direction * 12));
+    }
+  }
+
+  useEffect(() => {
+    const scopeChanged = previousSelectionScopeRef.current !== selectionScopeKey;
+    previousSelectionScopeRef.current = selectionScopeKey;
+    if (scopeChanged && selectedIdsRef.current.size > 1) clearAssetSelection();
+  }, [clearAssetSelection, selectionScopeKey]);
+
+  useEffect(() => {
+    setError(null);
+    assetScrollRef.current?.scrollTo({ top: 0 });
+  }, [query]);
+
+  useEffect(() => {
+    if (assetPagesQuery.isFetching || assetPagesQuery.isPlaceholderData || selectedId === null) {
+      return;
+    }
+    const visibleMatch = assets.find((asset) => asset.id === selectedId);
+    if (visibleMatch) {
+      selectedAssetCacheRef.current.set(visibleMatch.id, visibleMatch);
+      return;
+    }
+
+    let active = true;
+    void queryClient.fetchQuery({
+      queryKey: ["asset-match", query, selectedId],
+      queryFn: () => api.assets({ ...query, assetId: selectedId, limit: 1, offset: 0 }),
+      staleTime: 0,
+      gcTime: 0,
+    }).then((page) => {
+      if (!active) return;
+      const match = page.items[0];
+      if (!match) clearAssetSelection();
+      else selectedAssetCacheRef.current.set(match.id, match);
+    }).catch((caught) => {
+      if (active) reportError(caught, "selected-asset-query");
+    });
+    return () => {
+      active = false;
+    };
+  }, [assetPagesQuery.isFetching, assetPagesQuery.isPlaceholderData, assets, clearAssetSelection, query, queryClient, reportError, selectedId]);
+
+  useEffect(() => {
+    const viewport = assetScrollRef.current;
+    if (!viewport) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setAssetViewportWidth(entry.contentRect.width);
+    });
+    observer.observe(viewport);
+    setAssetViewportWidth(viewport.clientWidth);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const updateWindowWidth = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", updateWindowWidth);
+    return () => window.removeEventListener("resize", updateWindowWidth);
+  }, []);
+
+  const loadMoreAssets = useCallback(async () => {
+    if (!assetPagesQuery.hasNextPage || assetPagesQuery.isFetchingNextPage || assetPagesQuery.isPlaceholderData) return;
+    await assetPagesQuery.fetchNextPage();
+  }, [assetPagesQuery.fetchNextPage, assetPagesQuery.hasNextPage, assetPagesQuery.isFetchingNextPage, assetPagesQuery.isPlaceholderData]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (event.key === "?" && !isTypingTarget(event.target)) {
+        event.preventDefault();
+        setShortcutsOpen(true);
+      }
+      if (event.key === "Escape") {
+        if (document.activeElement !== searchRef.current) clearAssetSelection();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [clearAssetSelection]);
+
+  async function runQueuedImport(path: string) {
+    const jobId = crypto.randomUUID();
+    importJobsRef.current.add(jobId);
+    pendingImportCountRef.current += 1;
+    setPendingImportCount(pendingImportCountRef.current);
+    setImporting(true);
+    try {
+      return await api.importPack(path, jobId, (progress) => {
+        setActiveImportJobId(jobId);
+        setImportProgress(progress);
+      });
+    } finally {
+      importJobsRef.current.delete(jobId);
+      pendingImportCountRef.current -= 1;
+      setPendingImportCount(pendingImportCountRef.current);
+      if (pendingImportCountRef.current === 0) {
+        setImporting(false);
+        setImportProgress(null);
+        setActiveImportJobId(null);
+      }
+    }
+  }
+
+  async function cancelImports() {
+    await Promise.all([...importJobsRef.current].map((jobId) => api.cancelImport(jobId)));
+  }
+
+
+  async function importPack() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: true,
+        title: "Import folders",
+      });
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      setError(null);
+      const results = await Promise.allSettled(paths.map(runQueuedImport));
+      const imported = results.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" && !errorMessage(result.reason).includes("Import cancelled")
+          ? [errorMessage(result.reason)]
+          : [],
+      );
+      const lastPack = imported.at(-1);
+      if (lastPack) setSelection({ kind: "pack", packId: lastPack.id });
+      await loadSnapshot();
+      if (failures.length > 0) {
+        setError(
+          failures.length === 1
+            ? failures[0]
+            : `${failures.length} folders could not be imported: ${failures.join("; ")}`,
+        );
+      } else if (imported.length > 0) {
+        setNotice(imported.length === 1 ? `${imported[0].name} imported` : `${imported.length} packs imported`);
+      }
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  async function createCollection(event: React.FormEvent) {
+    event.preventDefault();
+    const name = collectionName.trim();
+    if (!name) return;
+    try {
+      const collection = await api.createCollection(name);
+      if (addSelectionToNewCollection && selectedIdsRef.current.size > 0) {
+        await api.setCollectionMemberships([...selectedIdsRef.current], collection.id, true);
+      }
+      setCollectionName("");
+      setCreatingCollection(false);
+      setAddSelectionToNewCollection(false);
+      await loadSnapshot();
+      if (addSelectionToNewCollection) {
+        setNotice(`Added ${selectedIdsRef.current.size} assets to ${collection.name}`);
+        await refresh();
+      } else {
+        setSelection({ kind: "collection", collectionId: collection.id });
+      }
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  async function addGodotProject(preserveAssetSelection = false) {
+    const path = await open({
+      directory: true,
+      multiple: false,
+      title: "Select the folder containing project.godot",
+    });
+    if (!path) return;
+    try {
+      setError(null);
+      const project = await api.addGodotProject(path);
+      await loadSnapshot();
+      if (!preserveAssetSelection) {
+        setSelection({ kind: "project", projectId: project.id });
+        clearAssetSelection();
+      }
+      return project;
+    } catch (caught) {
+      reportError(caught, "add-godot-project");
+    }
+  }
+
+  async function forgetGodotProject(project: ProjectSummary) {
+    try {
+      await api.removeProject(project.id);
+      if (selection.kind === "project" && selection.projectId === project.id) {
+        setSelection({ kind: "all" });
+        clearAssetSelection();
+      }
+      setConfirmProjectRemoval(null);
+      await loadSnapshot();
+    } catch (caught) {
+      reportError(caught, "forget-godot-project");
+    }
+  }
+
+  async function purgeMissingRecords(pack: PackSummary) {
+    try {
+      await api.purgeMissingAssets(pack.id);
+      setConfirmPurge(null);
+      await refresh();
+    } catch (caught) {
+      reportError(caught, "purge-missing");
+    }
+  }
+
+  async function restoreSelectedBackup() {
+    if (!pendingRestorePath) return;
+    try {
+      await api.restoreBackup(pendingRestorePath);
+      setPendingRestorePath(null);
+      setSettingsMessage("Backup restored successfully");
+      await refresh();
+    } catch (caught) {
+      reportError(caught, "backup-restore");
+    }
+  }
+
+  async function clearAllPreviews() {
+    try {
+      const status = await api.clearCache();
+      queryClient.setQueryData(["cache-status"], status);
+      const module = await import("./components/ModelCardPreview");
+      module.resetModelPreviewCache();
+      setSettingsMessage("Generated previews cleared. They will rebuild as assets appear.");
+      setConfirmClearCache(false);
+      await refresh();
+    } catch (caught) {
+      reportError(caught, "cache-clear");
+    }
+  }
+
+  async function addSelectionToGodot(projectId: number, projectName?: string) {
+    const ids = selectedIds.size > 0
+      ? [...selectedIds]
+      : selectedAsset ? [selectedAsset.id] : [];
+    if (ids.length === 0) return;
+    try {
+      setError(null);
+      setNotice(null);
+      setUndoRemoval(null);
+      const result = await api.exportAssetsToGodot(projectId, ids);
+      const project = snapshot.projects.find((item) => item.id === projectId);
+      setNotice(
+        `${result.copied} added to ${projectName ?? project?.name ?? "Godot"}${result.unchanged > 0 ? ` · ${result.unchanged} already current` : ""}`,
+      );
+      await loadSnapshot();
+    } catch (caught) {
+      reportError(caught, "godot-export");
+    }
+  }
+
+  async function mutateSelected(mutation: () => Promise<void>) {
+    try {
+      await mutation();
+      await refresh();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  async function deleteCurrentSource() {
+    try {
+      if (selection.kind === "pack" || selection.kind === "removed" || selection.kind === "missing") {
+        await api.removePack(selection.packId);
+      }
+      else if (selection.kind === "collection") {
+        await api.deleteCollection(selection.collectionId);
+      } else return;
+      setConfirmDelete(false);
+      setSelection({ kind: "all" });
+      clearAssetSelection();
+      await loadSnapshot();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  async function rescanPack(pack: PackSummary) {
+    try {
+      setError(null);
+      await runQueuedImport(pack.rootPath);
+      await refresh();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  function startRenamePack(pack: PackSummary) {
+    setRenamingPack(pack);
+    setPackName(pack.name);
+  }
+
+  async function renamePack(event: React.FormEvent) {
+    event.preventDefault();
+    if (!renamingPack || !packName.trim()) return;
+    try {
+      await api.renamePack(renamingPack.id, packName.trim());
+      setRenamingPack(null);
+      await loadSnapshot();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  async function relocatePack(pack: PackSummary) {
+    const path = await open({
+      directory: true,
+      multiple: false,
+      title: `Locate ${pack.name}`,
+    });
+    if (!path) return;
+    try {
+      setError(null);
+      await api.relocatePack(pack.id, path);
+      await refresh();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  function requestForgetPack(pack: PackSummary) {
+    setSelection({ kind: "pack", packId: pack.id });
+    clearAssetSelection();
+    setConfirmDelete(true);
+  }
+
+  async function removeAssetFromLootbox() {
+    if (confirmAssetRemoval.length === 0) return;
+    const removed = [...confirmAssetRemoval];
+    try {
+      await api.setAssetsExcluded(removed.map((asset) => asset.id), true);
+      clearAssetSelection();
+      setConfirmAssetRemoval([]);
+      setUndoRemoval({
+        ids: removed.map((asset) => asset.id),
+        label: removed.length === 1 ? removed[0].name : `${removed.length} assets`,
+      });
+      setNotice(removed.length === 1 ? `${removed[0].name} removed` : `${removed.length} assets removed`);
+      await refresh();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  const sectionTitle = useMemo(() => {
+    if (selection.kind === "type") return typeLabels[selection.assetType];
+    if (selection.kind === "pack") {
+      return snapshot.packs.find((pack) => pack.id === selection.packId)?.name ?? "Pack";
+    }
+    if (selection.kind === "removed") {
+      const name = snapshot.packs.find((pack) => pack.id === selection.packId)?.name ?? "Pack";
+      return `${name} · Removed`;
+    }
+    if (selection.kind === "missing") {
+      const name = snapshot.packs.find((pack) => pack.id === selection.packId)?.name ?? "Pack";
+      return `${name} · Missing`;
+    }
+    if (selection.kind === "collection") {
+      return (
+        snapshot.collections.find((item) => item.id === selection.collectionId)?.name ??
+        "Collection"
+      );
+    }
+    if (selection.kind === "duplicates") return "Duplicates";
+    if (selection.kind === "project") {
+      return snapshot.projects.find((item) => item.id === selection.projectId)?.name ?? "Godot project";
+    }
+    return "All assets";
+  }, [selection, snapshot.collections, snapshot.packs, snapshot.projects]);
+
+  const gridColumns = Math.max(
+    1,
+    Math.floor((Math.max(assetViewportWidth - 32, 128) + 12) / 140),
+  );
+  const gridItemWidth =
+    (Math.max(assetViewportWidth - 32, 128) - 12 * (gridColumns - 1)) / gridColumns;
+  const gridRowHeight = Math.max(gridItemWidth * 0.75 + 39, 135);
+  const assetRowCount =
+    view === "grid" ? Math.ceil(assets.length / gridColumns) : assets.length;
+  const getAssetScrollElement = useCallback(() => assetScrollRef.current, []);
+  const estimateAssetRowSize = useCallback(
+    () => (view === "grid" ? gridRowHeight : 44),
+    [gridRowHeight, view],
+  );
+  const getAssetRowKey = useCallback(
+    (index: number) => {
+      if (index >= assetRowCount) return "load-more";
+      const assetIndex = view === "grid" ? index * gridColumns : index;
+      return assets[assetIndex]?.id ?? index;
+    },
+    [assetRowCount, assets, gridColumns, view],
+  );
+  const virtualizer = useVirtualizer({
+    count: assetRowCount + (hasMoreAssets ? 1 : 0),
+    getScrollElement: getAssetScrollElement,
+    estimateSize: estimateAssetRowSize,
+    gap: view === "grid" ? 16 : 0,
+    overscan: view === "grid" ? 1 : 4,
+    getItemKey: getAssetRowKey,
+  });
+  const virtualRows = virtualizer.getVirtualItems();
+  const lastVirtualRow = virtualRows.at(-1)?.index ?? -1;
+
+  useEffect(() => {
+    virtualizer.measure();
+  }, [gridColumns, gridRowHeight, view, virtualizer]);
+
+  useEffect(() => {
+    if (lastVirtualRow >= assetRowCount - 3) void loadMoreAssets();
+  }, [assetRowCount, lastVirtualRow, loadMoreAssets]);
+
+  const deletingPack = selection.kind === "pack" || selection.kind === "removed" || selection.kind === "missing";
+
+  const selectAsset = useCallback(
+    (asset: Asset, event: React.MouseEvent<HTMLButtonElement>) => {
+      const additive = event.metaKey || event.ctrlKey;
+      if (event.shiftKey && selectionAnchorRef.current !== null) {
+        const anchorIndex = assets.findIndex(
+          (candidate) => candidate.id === selectionAnchorRef.current,
+        );
+        const targetIndex = assets.findIndex((candidate) => candidate.id === asset.id);
+        if (anchorIndex >= 0 && targetIndex >= 0) {
+          const range = assets
+            .slice(Math.min(anchorIndex, targetIndex), Math.max(anchorIndex, targetIndex) + 1)
+            .map((candidate) => candidate.id);
+          applyAssetSelection(
+            new Set(additive ? [...selectedIdsRef.current, ...range] : range),
+            asset.id,
+          );
+          return;
+        }
+      }
+
+      selectionAnchorRef.current = asset.id;
+      if (additive) {
+        const next = new Set(selectedIdsRef.current);
+        if (next.has(asset.id)) next.delete(asset.id);
+        else next.add(asset.id);
+        const nextActive = next.has(asset.id) ? asset.id : (next.values().next().value ?? null);
+        applyAssetSelection(next, nextActive);
+      } else {
+        applyAssetSelection(new Set([asset.id]), asset.id);
+      }
+    },
+    [applyAssetSelection, assets],
+  );
+
+  const openAsset = useCallback((asset: Asset) => {
+    void api
+      .openAsset(asset.absolutePath)
+      .catch((caught) => setError(errorMessage(caught)));
+  }, []);
+
+  const selectAssetForContextMenu = useCallback((asset: Asset) => {
+    if (selectedIdsRef.current.has(asset.id)) return;
+    selectionAnchorRef.current = asset.id;
+    selectedAssetCacheRef.current.set(asset.id, asset);
+    applyAssetSelection(new Set([asset.id]), asset.id);
+  }, [applyAssetSelection]);
+
+  const copyAssetPath = useCallback((path: string) => {
+    void navigator.clipboard.writeText(path)
+      .then(() => {
+        setUndoRemoval(null);
+        setNotice("Path copied");
+      })
+      .catch((caught) => reportError(caught, "copy-path"));
+  }, [reportError]);
+
+  const revealAsset = useCallback((asset: Asset) => {
+    void api
+      .revealAsset(asset.absolutePath)
+      .catch((caught) => setError(errorMessage(caught)));
+  }, []);
+
+  const requestAssetRemoval = useCallback(
+    (asset: Asset) => {
+      const targets = selectedIdsRef.current.has(asset.id)
+        ? [...selectedIdsRef.current].flatMap((id) => {
+            const candidate = selectedAssetCacheRef.current.get(id) ??
+              assets.find((item) => item.id === id);
+            return candidate ? [candidate] : [];
+          })
+        : [asset];
+      if (targets.length >= 10) {
+        setConfirmAssetRemoval(targets);
+        return;
+      }
+      if (targets.length === 0) return;
+      const ids = targets.map((target) => target.id);
+      const label = targets.length === 1 ? targets[0].name : `${targets.length} assets`;
+      void api.setAssetsExcluded(ids, true)
+        .then(async () => {
+          clearAssetSelection();
+          setUndoRemoval({ ids, label });
+          setNotice(`${label} removed`);
+          await refresh();
+        })
+        .catch((caught) => reportError(caught, "remove-asset"));
+    },
+    [assets, clearAssetSelection, refresh, reportError],
+  );
+
+  const reportCardError = useCallback((caught: unknown) => {
+    setError(errorMessage(caught));
+  }, []);
+
+  const restoreAsset = useCallback(
+    (asset: Asset) => {
+      const targets = selectedIdsRef.current.has(asset.id)
+        ? [...selectedIdsRef.current].flatMap((id) => {
+            const candidate = selectedAssetCacheRef.current.get(id) ??
+              assets.find((item) => item.id === id);
+            return candidate ? [candidate] : [];
+          })
+        : [asset];
+      void api
+        .setAssetsExcluded(targets.map((candidate) => candidate.id), false)
+        .then(() => {
+          clearAssetSelection();
+          return refresh();
+        })
+        .catch((caught) => setError(errorMessage(caught)));
+    },
+    [assets, clearAssetSelection, refresh],
+  );
+
+  useEffect(() => {
+    const handleLibraryKeys = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        isTypingTarget(event.target) ||
+        creatingCollection ||
+        renamingPack !== null ||
+        confirmDelete ||
+        confirmAssetRemoval.length > 0
+      ) {
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        void (async () => {
+          const scopeKey = selectionScopeKeyRef.current;
+          const matches = await api.assetSelections(query);
+          if (scopeKey !== selectionScopeKeyRef.current) return;
+          const idSet = new Set(matches.map((match) => match.id));
+          selectedPathCacheRef.current = new Map(
+            matches.map((match) => [match.id, match.absolutePath]),
+          );
+          selectedAssetCacheRef.current = new Map(
+            assets
+              .filter((asset) => idSet.has(asset.id))
+              .map((asset) => [asset.id, asset]),
+          );
+          const activeId = assets.find((asset) => idSet.has(asset.id))?.id ?? null;
+          selectionAnchorRef.current = activeId;
+          applyAssetSelection(idSet, activeId);
+        })().catch((caught) => reportError(caught, "select-all"));
+        return;
+      }
+
+      const currentIndex = selectedId === null
+        ? -1
+        : assets.findIndex((asset) => asset.id === selectedId);
+      const directions: Record<string, number> = view === "grid"
+        ? {
+            ArrowLeft: -1,
+            ArrowRight: 1,
+            ArrowUp: -gridColumns,
+            ArrowDown: gridColumns,
+          }
+        : { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1 };
+      const direction = directions[event.key];
+      if (direction !== undefined) {
+        event.preventDefault();
+        const nextIndex = Math.max(
+          0,
+          Math.min(assets.length - 1, currentIndex < 0 ? 0 : currentIndex + direction),
+        );
+        const nextAsset = assets[nextIndex];
+        if (!nextAsset) return;
+        if (event.shiftKey) {
+          const anchorId = selectionAnchorRef.current ?? selectedId ?? nextAsset.id;
+          selectionAnchorRef.current = anchorId;
+          const anchorIndex = assets.findIndex((asset) => asset.id === anchorId);
+          const range = assets
+            .slice(Math.min(anchorIndex, nextIndex), Math.max(anchorIndex, nextIndex) + 1)
+            .map((asset) => asset.id);
+          applyAssetSelection(
+            new Set(event.metaKey || event.ctrlKey ? [...selectedIdsRef.current, ...range] : range),
+            nextAsset.id,
+          );
+        } else {
+          selectionAnchorRef.current = nextAsset.id;
+          applyAssetSelection(new Set([nextAsset.id]), nextAsset.id);
+        }
+        virtualizer.scrollToIndex(
+          view === "grid" ? Math.floor(nextIndex / gridColumns) : nextIndex,
+          { align: "auto" },
+        );
+        if (nextIndex >= assets.length - gridColumns * 2) void loadMoreAssets();
+        return;
+      }
+
+      if (event.key === "Enter" && selectedAsset) {
+        event.preventDefault();
+        openAsset(selectedAsset);
+      } else if (event.key === " " && selectedAsset?.assetType === "audio" && !event.repeat) {
+        event.preventDefault();
+        void toggleAudioPlayback(selectedAsset.absolutePath).catch((caught) =>
+          setError(errorMessage(caught)),
+        );
+      } else if (
+        event.key === "Delete" &&
+        selectedAsset &&
+        selection.kind !== "removed"
+      ) {
+        event.preventDefault();
+        requestAssetRemoval(selectedAsset);
+      }
+    };
+    window.addEventListener("keydown", handleLibraryKeys);
+    return () => window.removeEventListener("keydown", handleLibraryKeys);
+  }, [
+    applyAssetSelection,
+    assets,
+    confirmAssetRemoval.length,
+    confirmDelete,
+    creatingCollection,
+    gridColumns,
+    loadMoreAssets,
+    openAsset,
+    query,
+    renamingPack,
+    requestAssetRemoval,
+    reportError,
+    selectedAsset,
+    selectedId,
+    selection.kind,
+    view,
+    virtualizer,
+  ]);
+
+  return (
+    <div
+      className="dark grid h-full bg-background text-foreground"
+      style={{
+        gridTemplateColumns: `${layoutLeftPanelWidth}px 4px minmax(0, 1fr) 4px ${layoutRightPanelWidth}px`,
+      }}
+    >
+      <Sidebar
+        snapshot={snapshot}
+        selection={selection}
+        creatingCollection={creatingCollection}
+        onSelect={(next) => {
+          setSelection(next);
+          clearAssetSelection();
+        }}
+        onImport={() => void importPack()}
+        onStartCollection={() => {
+          setAddSelectionToNewCollection(false);
+          setCreatingCollection(true);
+        }}
+        onRenamePack={startRenamePack}
+        onRescanPack={(pack) => void rescanPack(pack)}
+        onOpenPack={(pack) =>
+          void api.openAsset(pack.rootPath).catch((caught) => setError(errorMessage(caught)))
+        }
+        onRelocatePack={(pack) => void relocatePack(pack)}
+        onForgetPack={requestForgetPack}
+        onViewRemoved={(pack) => {
+          setSelection({ kind: "removed", packId: pack.id });
+          clearAssetSelection();
+        }}
+        onViewMissing={(pack) => {
+          setSelection({ kind: "missing", packId: pack.id });
+          clearAssetSelection();
+        }}
+        onPurgeMissing={setConfirmPurge}
+        onAddProject={() => void addGodotProject()}
+        onOpenProject={(project) =>
+          void api.openAsset(project.rootPath).catch((caught) => reportError(caught, "open-project"))
+        }
+        onForgetProject={setConfirmProjectRemoval}
+        onSettings={() => {
+          setSettingsMessage("");
+          setSettingsOpen(true);
+        }}
+        onShortcuts={() => setShortcutsOpen(true)}
+      />
+
+      <div
+        role="separator"
+        aria-label="Resize library sidebar"
+        aria-orientation="vertical"
+        tabIndex={0}
+        className="group relative z-20 cursor-col-resize outline-none"
+        onPointerDown={(event) => startPanelResize("left", event)}
+        onKeyDown={(event) => resizePanelWithKeyboard("left", event)}
+      >
+        <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-primary/60 group-focus-visible:bg-primary" />
+      </div>
+
+      <main className="flex min-w-0 flex-col overflow-hidden">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-4">
+          <AssetSearch inputRef={searchRef} onQueryChange={setDebouncedSearch} />
+
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant={activeFilters.length > 0 ? "secondary" : "outline"}
+              size="sm"
+              className="rounded-md"
+              onClick={() => {
+                setFilterDraft(filters);
+                setFiltersOpen(true);
+              }}
+              aria-label={activeFilters.length > 0 ? `Filter assets, ${activeFilters.length} active` : "Filter assets"}
+              title={activeFilters.length > 0 ? activeFilters.map((filter) => filter.label).join(" · ") : "Filters"}
+            >
+              <SlidersHorizontal />
+              <span className="max-[1150px]:hidden">Filters</span>
+              {activeFilters.length > 0 && (
+                <span className="font-mono text-[11px] text-primary max-[1150px]:hidden">{activeFilters.length}</span>
+              )}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="min-w-44 justify-start rounded-md max-[1150px]:min-w-0"
+                    aria-label={`Sort assets by ${sortLabels[sort]}, ${sortDirectionLabel(sort, sortDirection)}`}
+                    title="Sort"
+                  />
+                }
+              >
+                <ArrowUpDown />
+                <span className="max-[1150px]:hidden">{sortLabels[sort]}</span>
+                <span className="text-[11px] text-muted-foreground max-[1150px]:hidden">{sortDirectionLabel(sort, sortDirection)}</span>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-40 rounded-md">
+                {([
+                  ["name", "Name"],
+                  ["newest", "Date modified"],
+                  ["largest", "File size"],
+                  ["type", "Type"],
+                ] as const).map(([value, label]) => (
+                  <DropdownMenuItem
+                    key={value}
+                    className="rounded-sm text-xs"
+                    onClick={() => {
+                      setSort(value);
+                      setSortDirection(value === "newest" || value === "largest" ? "desc" : "asc");
+                    }}
+                  >
+                    <Check className={cn(sort === value ? "opacity-100" : "opacity-0")} />
+                    {label}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                {(["asc", "desc"] as const).map((value) => (
+                  <DropdownMenuItem
+                    key={value}
+                    className="rounded-sm text-xs"
+                    onClick={() => setSortDirection(value)}
+                  >
+                    <Check className={cn(sortDirection === value ? "opacity-100" : "opacity-0")} />
+                    {sortDirectionLabel(sort, value)}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <ButtonGroup aria-label="View">
+              <Button
+                type="button"
+                variant={view === "grid" ? "secondary" : "outline"}
+                size="icon-sm"
+                className="rounded-l-md rounded-r-none"
+                onClick={() => setView("grid")}
+                aria-label="Grid view"
+                title="Grid view"
+              >
+                <Grid2X2 />
+              </Button>
+              <Button
+                type="button"
+                variant={view === "list" ? "secondary" : "outline"}
+                size="icon-sm"
+                className="rounded-r-md rounded-l-none"
+                onClick={() => setView("list")}
+                aria-label="List view"
+                title="List view"
+              >
+                <List />
+              </Button>
+            </ButtonGroup>
+          </div>
+        </header>
+
+        <div className={cn("flex h-12 shrink-0 items-center justify-between border-b px-4", selectedIds.size > 0 && "bg-primary/[0.035]")}>
+          {selectedIds.size > 0 ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="text-xs font-medium">{selectedIds.size.toLocaleString()} selected</span>
+            </div>
+          ) : (
+            <div className="flex min-w-0 items-baseline gap-2">
+              <h1 className="truncate text-sm font-semibold tracking-[-0.01em]">{sectionTitle}</h1>
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {loading ? "…" : assetTotal.toLocaleString()}
+              </span>
+              {selectedPack && !selectedPack.available && (
+                <span className="flex items-center gap-1 text-xs text-destructive" title={selectedPack.rootPath}>
+                  <FolderCog className="size-3.5" /> Folder missing
+                </span>
+              )}
+              {selectedProject && !selectedProject.available && (
+                <span className="flex items-center gap-1 text-xs text-destructive" title={selectedProject.rootPath}>
+                  <FolderCog className="size-3.5" /> Project missing
+                </span>
+              )}
+            </div>
+          )}
+
+          {selectedIds.size > 0 && selectedAsset ? (
+            <div className="flex items-center gap-1.5">
+              {selectedIds.size === 1 && (
+                <Button type="button" variant="outline" size="sm" className="rounded-md" onClick={() => openAsset(selectedAsset)} aria-label="Open asset" title="Open asset">
+                  <ExternalLink /> <span className="max-[1150px]:hidden">Open</span>
+                </Button>
+              )}
+              {selection.kind !== "removed" && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger render={<Button type="button" variant="outline" size="sm" className="rounded-md" aria-label="Add to Godot" title="Add to Godot" />}>
+                    <Gamepad2 /> <span className="max-[1150px]:hidden">Add to Godot</span>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-52">
+                    {snapshot.projects.filter((project) => project.available).map((project) => (
+                      <DropdownMenuItem key={project.id} className="text-xs" onClick={() => void addSelectionToGodot(project.id)}>
+                        <Gamepad2 /> {project.name}
+                      </DropdownMenuItem>
+                    ))}
+                    {snapshot.projects.some((project) => project.available) && <DropdownMenuSeparator />}
+                    <DropdownMenuItem className="text-xs" onClick={() => void (async () => {
+                      const project = await addGodotProject(true);
+                      if (project) await addSelectionToGodot(project.id, project.name);
+                    })()}>
+                      <Plus /> Add Godot project…
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+              <Button
+                type="button"
+                variant={selection.kind === "removed" ? "outline" : "ghost"}
+                size="sm"
+                className={cn("rounded-md", selection.kind !== "removed" && "text-destructive hover:text-destructive")}
+                aria-label={selection.kind === "removed" ? "Restore assets" : "Remove assets from Lootbox"}
+                title={selection.kind === "removed" ? "Restore" : "Remove from Lootbox"}
+                onClick={() => selection.kind === "removed" ? restoreAsset(selectedAsset) : requestAssetRemoval(selectedAsset)}
+              >
+                {selection.kind === "removed" ? <><ArchiveRestore /> <span className="max-[1150px]:hidden">Restore</span></> : <><Trash2 /> <span className="max-[1150px]:hidden">Remove</span></>}
+              </Button>
+              <Button type="button" variant="ghost" size="icon-sm" className="rounded-md text-muted-foreground" onClick={clearAssetSelection} aria-label="Clear selection" title="Clear selection">
+                <X />
+              </Button>
+            </div>
+          ) : (selection.kind === "pack" || selection.kind === "removed" || selection.kind === "missing" || selection.kind === "collection" || selection.kind === "project") && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="rounded-sm text-muted-foreground"
+                  />
+                }
+              >
+                <MoreHorizontal />
+                <span className="sr-only">Actions</span>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-40 rounded-md">
+                {selection.kind === "removed" && selectedPack && (
+                  <DropdownMenuItem
+                    className="rounded-sm text-xs"
+                    onClick={() => setSelection({ kind: "pack", packId: selectedPack.id })}
+                  >
+                    <FolderOpen /> Back to pack
+                  </DropdownMenuItem>
+                )}
+                {selection.kind === "missing" && selectedPack && (
+                  <DropdownMenuItem
+                    className="rounded-sm text-xs"
+                    onClick={() => setSelection({ kind: "pack", packId: selectedPack.id })}
+                  >
+                    <FolderOpen /> Back to pack
+                  </DropdownMenuItem>
+                )}
+                {selectedPack?.available && (
+                  <DropdownMenuItem className="rounded-sm text-xs" onClick={() => void api.openAsset(selectedPack.rootPath)}>
+                    <FolderOpen /> Open folder
+                  </DropdownMenuItem>
+                )}
+                {selectedPack?.available && (
+                  <DropdownMenuItem className="rounded-sm text-xs" onClick={() => void rescanPack(selectedPack)}>
+                    <RefreshCw /> Rescan
+                  </DropdownMenuItem>
+                )}
+                {selectedPack && !selectedPack.available && (
+                  <DropdownMenuItem className="rounded-sm text-xs" onClick={() => void relocatePack(selectedPack)}>
+                    <FolderCog /> Fix location
+                  </DropdownMenuItem>
+                )}
+                {selectedPack && (
+                  <DropdownMenuItem className="rounded-sm text-xs" onClick={() => startRenamePack(selectedPack)}>
+                    <Pencil /> Rename
+                  </DropdownMenuItem>
+                )}
+                {selection.kind === "pack" && selectedPack && selectedPack.removedAssetCount > 0 && (
+                  <DropdownMenuItem
+                    className="rounded-sm text-xs"
+                    onClick={() => {
+                      setSelection({ kind: "removed", packId: selectedPack.id });
+                      clearAssetSelection();
+                    }}
+                  >
+                    <ArchiveRestore /> Removed items
+                  </DropdownMenuItem>
+                )}
+                {selectedPack && <DropdownMenuSeparator />}
+                {selection.kind === "project" && selectedProject && (
+                  <>
+                    <DropdownMenuItem className="rounded-sm text-xs" disabled={!selectedProject.available} onClick={() => void api.openAsset(selectedProject.rootPath).catch((caught) => reportError(caught, "open-project"))}>
+                      <FolderOpen /> Open project folder
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem variant="destructive" className="rounded-sm text-xs" onClick={() => setConfirmProjectRemoval(selectedProject)}>
+                      <Trash2 /> Forget project
+                    </DropdownMenuItem>
+                  </>
+                )}
+                {selection.kind !== "project" && (
+                  <DropdownMenuItem
+                    variant="destructive"
+                    className="rounded-sm text-xs"
+                    onClick={() => setConfirmDelete(true)}
+                  >
+                    <Trash2 /> {deletingPack ? "Forget pack" : "Delete collection"}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
+
+        <div
+          ref={assetScrollRef}
+          className="quiet-scrollbar min-h-0 flex-1 overflow-y-auto"
+          onClick={(event) => {
+            const target = event.target as HTMLElement;
+            if (!target.closest("[data-asset-card]")) clearAssetSelection();
+          }}
+        >
+          {loading && assets.length === 0 ? (
+            <div
+              className="grid gap-3 p-4"
+              style={{ gridTemplateColumns: view === "grid" ? `repeat(${gridColumns}, minmax(0, 1fr))` : "1fr" }}
+              aria-label="Loading assets"
+            >
+              {Array.from({ length: view === "grid" ? Math.max(gridColumns * 3, 6) : 10 }, (_, index) => (
+                <div key={index} className={cn("min-w-0", view === "list" && "flex h-12 items-center gap-3 px-2")}>
+                  <div className={cn("skeleton-shimmer rounded-md", view === "grid" ? "aspect-[4/3]" : "size-8 shrink-0")} />
+                  <div className={cn("mt-2 space-y-1.5", view === "list" && "mt-0 flex-1")}>
+                    <div className="skeleton-shimmer h-2.5 w-2/3 rounded" />
+                    <div className="skeleton-shimmer h-2 w-1/3 rounded opacity-70" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : assets.length > 0 ? (
+            <>
+            {view === "list" && (
+              <div className="sticky top-0 z-10 grid h-8 grid-cols-[34px_minmax(130px,0.5fr)_minmax(0,1fr)_84px] items-center gap-3 border-b bg-background/95 px-4 text-[11px] font-medium text-muted-foreground backdrop-blur-sm">
+                <span />
+                <span>Name</span>
+                <span>Location</span>
+                <span className="text-right">Format · size</span>
+              </div>
+            )}
+            <div
+              className="relative w-full"
+              style={{ height: virtualizer.getTotalSize() + 24 }}
+            >
+              {virtualRows.map((virtualRow) => {
+                if (virtualRow.index >= assetRowCount) {
+                  return (
+                    <div
+                      key={virtualRow.key}
+                      className="absolute top-0 left-0 grid w-full place-items-center text-muted-foreground"
+                      style={{
+                        height: virtualRow.size,
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      {loadingMore && <LoaderCircle className="size-3.5 animate-spin" />}
+                    </div>
+                  );
+                }
+
+                const rowAssets =
+                  view === "grid"
+                    ? assets.slice(
+                        virtualRow.index * gridColumns,
+                        (virtualRow.index + 1) * gridColumns,
+                      )
+                    : [assets[virtualRow.index]];
+                return (
+                  <div
+                    key={virtualRow.key}
+                    className={cn(
+                      "absolute top-0",
+                      view === "grid"
+                        ? "grid gap-x-3 px-4"
+                        : "right-2 left-2",
+                    )}
+                    style={{
+                      width: view === "grid" ? "100%" : undefined,
+                      gridTemplateColumns:
+                        view === "grid"
+                          ? `repeat(${gridColumns}, minmax(0, 1fr))`
+                          : undefined,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    {rowAssets.map((asset) => (
+                      <AssetCard
+                        key={asset.id}
+                        asset={asset}
+                        selected={selectedIds.has(asset.id)}
+                        view={view}
+                        onSelect={selectAsset}
+                        onContextSelect={selectAssetForContextMenu}
+                        onOpen={openAsset}
+                        onReveal={revealAsset}
+                        onRemove={requestAssetRemoval}
+                        onRestore={restoreAsset}
+                        removed={selection.kind === "removed"}
+                        selectionCount={selectedIds.has(asset.id) ? selectedIds.size : 1}
+                        dragPaths={selectedIds.has(asset.id) ? selectedDragPaths : [asset.absolutePath]}
+                        onCopyPath={copyAssetPath}
+                        onError={reportCardError}
+                      />
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+            </>
+          ) : (
+            <div className="grid h-full min-h-64 place-items-center">
+              {selection.kind === "removed" ? (
+                <EmptyState icon={ArchiveRestore} title="No removed assets" description="Removed assets from this pack appear here." />
+              ) : selection.kind === "duplicates" ? (
+                <EmptyState icon={Copy} title={snapshot.hashingAssets ? "Checking file contents" : "No duplicate files"} description={snapshot.hashingAssets ? "This view updates when the check finishes." : "No indexed files have matching contents."} />
+              ) : selection.kind === "project" ? (
+                <EmptyState icon={Gamepad2} title="No project assets" description="Use Add to Godot from an asset selection." />
+              ) : snapshot.totalAssets === 0 ? (
+                <EmptyState icon={FolderPlus} title="No asset packs" description="Import folders to start browsing assets." action={{ label: "Import packs", onClick: () => void importPack() }} />
+              ) : (
+                <EmptyState icon={SearchX} title="No matching assets" description="Try another search or clear the filters." action={activeFilters.length > 0 ? { label: "Clear filters", onClick: () => setFilters({ ...clearedFilters }) } : undefined} />
+              )}
+            </div>
+          )}
+        </div>
+      </main>
+
+      <div
+        role="separator"
+        aria-label="Resize details panel"
+        aria-orientation="vertical"
+        tabIndex={0}
+        className="group relative z-20 cursor-col-resize outline-none"
+        onPointerDown={(event) => startPanelResize("right", event)}
+        onKeyDown={(event) => resizePanelWithKeyboard("right", event)}
+      >
+        <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-primary/60 group-focus-visible:bg-primary" />
+      </div>
+
+      {selectedAsset ? (
+        <DetailPanel
+          asset={selectedAsset}
+          selectedCount={Math.max(selectedIds.size, 1)}
+          selectedAssets={selectedAssets}
+          collections={snapshot.collections}
+          onAddTag={(name) => mutateSelected(() => api.addTags([...selectedIds], name))}
+          onRemoveTag={(name) => mutateSelected(() => api.removeTags([...selectedIds], name))}
+          onMembership={(collectionId, included) =>
+            mutateSelected(() =>
+              api.setCollectionMemberships([...selectedIds], collectionId, included),
+            )
+          }
+          onClassification={(assetType, mapRole) =>
+            mutateSelected(() => api.setClassificationOverride([...selectedIds], assetType, mapRole))
+          }
+          onGroup={(action) =>
+            mutateSelected(() => api.setClassificationOverride([...selectedIds], undefined, undefined, action))
+          }
+          onResetClassification={() =>
+            mutateSelected(() => api.resetClassificationOverride([...selectedIds]))
+          }
+          onPreviewError={(message) => reportError(message, `model-preview:${selectedAsset.relativePath}`)}
+          onAddCollection={() => {
+            setAddSelectionToNewCollection(true);
+            setCreatingCollection(true);
+          }}
+          onCopyPath={copyAssetPath}
+          onOpen={() =>
+            void api
+              .openAsset(selectedAsset.absolutePath)
+              .catch((caught) => setError(errorMessage(caught)))
+          }
+          onOpenVariant={(path) =>
+            void api.openAsset(path).catch((caught) => setError(errorMessage(caught)))
+          }
+          onRevealPath={(path) =>
+            void api
+              .revealAsset(path)
+              .catch((caught) => setError(errorMessage(caught)))
+          }
+        />
+      ) : (
+        <aside className="min-w-0 border-l bg-background">
+          <header className="flex h-[58px] items-center border-b px-4">
+            <h2 className="text-xs font-semibold">Details</h2>
+          </header>
+          <div className="flex h-[calc(100%-58px)] items-center justify-center px-6 text-center">
+            <div>
+              <p className="text-xs font-medium">No asset selected</p>
+            </div>
+          </div>
+        </aside>
+      )}
+
+      {(error || notice) && (
+        <div className={cn(
+          "fixed top-3 left-1/2 z-[80] flex max-w-[min(620px,calc(100vw-32px))] -translate-x-1/2 items-center gap-2 rounded-md border bg-popover px-3 py-2 text-xs shadow-lg",
+          error ? "border-destructive/40" : "border-primary/35",
+        )} role={error ? "alert" : "status"}>
+          {error ? <AlertCircle className="size-4 shrink-0 text-destructive" /> : <Check className="size-4 shrink-0 text-primary" />}
+          <span className="min-w-0 flex-1 break-words">{error ?? notice}</span>
+          {error && (
+            <Button type="button" variant="ghost" size="sm" onClick={() => void navigator.clipboard.writeText(error).then(() => {
+              setError(null);
+              setNotice("Error copied");
+            }).catch((caught) => reportError(caught, "copy-error"))}>
+              Copy
+            </Button>
+          )}
+          {!error && undoRemoval && (
+            <Button type="button" variant="ghost" size="sm" onClick={() => void api.setAssetsExcluded(undoRemoval.ids, false).then(async () => {
+              setUndoRemoval(null);
+              setNotice(`${undoRemoval.label} restored`);
+              await refresh();
+            }).catch((caught) => reportError(caught, "undo-remove"))}>
+              Undo
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={error ? "Dismiss error" : "Dismiss notification"}
+            onClick={() => {
+              if (error) setError(null);
+              else {
+                setNotice(null);
+                setUndoRemoval(null);
+              }
+            }}
+          >
+            <X />
+          </Button>
+        </div>
+      )}
+
+      <Dialog open={creatingCollection} onOpenChange={(open) => {
+        setCreatingCollection(open);
+        if (!open) setAddSelectionToNewCollection(false);
+      }}>
+        <DialogContent className="gap-4 sm:max-w-xs">
+          <DialogHeader className="gap-1">
+            <DialogTitle className="text-sm">New collection</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={createCollection} className="space-y-3">
+            <label className="block text-[11px] font-medium text-muted-foreground">Collection name</label>
+            <Input
+              value={collectionName}
+              onChange={(event) => setCollectionName(event.target.value)}
+              placeholder="Name"
+              aria-label="Collection name"
+              autoFocus
+              className="text-xs"
+            />
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setCreatingCollection(false);
+                  setAddSelectionToNewCollection(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" size="sm">{addSelectionToNewCollection ? "Create and add" : "Create collection"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={renamingPack !== null}
+        onOpenChange={(open) => {
+          if (!open) setRenamingPack(null);
+        }}
+      >
+        <DialogContent className="gap-4 sm:max-w-xs">
+          <DialogHeader className="gap-1">
+            <DialogTitle className="text-sm">Rename pack</DialogTitle>
+            <DialogDescription className="text-xs">Only the library label changes; the source folder stays untouched.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={renamePack} className="space-y-3">
+            <label className="block text-[11px] font-medium text-muted-foreground">Display name</label>
+            <Input
+              value={packName}
+              onChange={(event) => setPackName(event.target.value)}
+              aria-label="Pack name"
+              autoFocus
+              className="text-xs"
+            />
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setRenamingPack(null)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" size="sm">Save name</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={confirmAssetRemoval.length > 0}
+        onOpenChange={(open) => {
+          if (!open) setConfirmAssetRemoval([]);
+        }}
+      >
+        <AlertDialogContent className="rounded-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove {confirmAssetRemoval.length} assets?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              They will disappear from Lootbox, including grouped formats. The source files stay untouched.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="rounded-b-md">
+            <AlertDialogCancel className="rounded-sm">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              className="rounded-sm"
+              onClick={() => void removeAssetFromLootbox()}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent className="rounded-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deletingPack ? "Forget this pack?" : "Delete this collection?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deletingPack ? "Files stay where they are." : "Assets stay in the library."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="rounded-b-md">
+            <AlertDialogCancel className="rounded-sm">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              className="rounded-sm"
+              onClick={() => void deleteCurrentSource()}
+            >
+              {deletingPack ? "Forget" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={filtersOpen} onOpenChange={(open) => {
+        setFiltersOpen(open);
+        if (open) setFilterDraft(filters);
+      }}>
+        <DialogContent className="gap-4 sm:max-w-md">
+          <DialogHeader className="gap-1">
+            <DialogTitle className="text-sm">Filter assets</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <FilterSelect label="Format" value={filterDraft.extension} placeholder="All formats" options={filterOptions.extensions.map((value) => ({ value, label: `.${value}` }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, extension: value }))} />
+            <FilterSelect label="Map role" value={filterDraft.mapRole} placeholder="All map roles" options={filterOptions.mapRoles.map((value) => ({ value, label: value.replaceAll("_", " ") }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, mapRole: value }))} />
+            <FilterSelect label="Tag" value={filterDraft.tag} placeholder="All tags" options={filterOptions.tags.map((value) => ({ value, label: value }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, tag: value }))} />
+            <FilterSelect label="Minimum resolution" value={filterDraft.minWidth} placeholder="Any resolution" options={[256, 512, 1024, 2048, 4096, 8192].map((value) => ({ value: String(value), label: `${value} × ${value}+` }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, minWidth: value }))} />
+            <FilterSelect className="col-span-2" label="Classification confidence" value={filterDraft.minConfidence} placeholder="Any confidence" options={[{ value: "80", label: "Needs review · 80% or lower" }, { value: "60", label: "Uncertain · 60% or lower" }]} onValueChange={(value) => setFilterDraft((current) => ({ ...current, minConfidence: value }))} />
+            <FilterSelect className="col-span-2" label="File status" value={filterDraft.status} placeholder="Available files" options={[{ value: "missing", label: "Missing files" }]} onValueChange={(value) => setFilterDraft((current) => ({ ...current, status: value }))} />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setFilterDraft({ ...clearedFilters })}>Reset</Button>
+            <Button type="button" size="sm" onClick={() => {
+              setFilters(filterDraft);
+              setFiltersOpen(false);
+            }}>Apply filters</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
+        <DialogContent className="gap-4 sm:max-w-md">
+          <DialogHeader className="gap-1">
+            <DialogTitle>Keyboard shortcuts</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 text-xs">
+            {[
+              ["Ctrl F", "Search"],
+              ["Ctrl A", "Select all results"],
+              ["↑ ↓ ← →", "Navigate assets"],
+              ["Shift + arrows", "Extend selection"],
+              ["Ctrl + click", "Toggle selection"],
+              ["Enter", "Open selected asset"],
+              ["Space", "Play or pause audio"],
+              ["Delete", "Remove from Lootbox"],
+              ["Esc", "Clear selection"],
+              ["?", "Show shortcuts"],
+            ].map(([keys, action]) => (
+              <div key={keys} className="contents">
+                <kbd className="w-fit rounded border bg-muted/40 px-2 py-1 font-mono text-[11px] text-foreground">{keys}</kbd>
+                <span className="self-center text-muted-foreground">{action}</span>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={settingsOpen} onOpenChange={(open) => {
+        setSettingsOpen(open);
+        if (open) setSettingsMessage("");
+      }}>
+        <DialogContent className="gap-4 sm:max-w-xl">
+          <DialogHeader className="gap-1">
+            <DialogTitle className="text-sm">Maintenance</DialogTitle>
+          </DialogHeader>
+          <section className="space-y-3 pb-4">
+            <div className="mb-2 flex items-start gap-2.5">
+              <DatabaseBackup className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <div><h3 className="text-xs font-medium">Metadata backups</h3>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">Five rotating safety backups are maintained automatically.</p></div>
+            </div>
+            <div className="flex flex-wrap gap-2 pl-6.5">
+              <Button type="button" variant="outline" size="sm" className="rounded-sm text-xs" onClick={() => void (async () => {
+                const destination = await save({ title: "Export Lootbox metadata", defaultPath: "lootbox-metadata.db", filters: [{ name: "SQLite database", extensions: ["db"] }] });
+                if (!destination) return;
+                const path = await api.createBackup(destination);
+                setSettingsMessage(`Backup saved to ${path}`);
+              })().catch((caught) => reportError(caught, "backup-export"))}>Export backup</Button>
+              <Button type="button" variant="outline" size="sm" className="rounded-sm text-xs" onClick={() => void (async () => {
+                const path = await open({ multiple: false, directory: false, title: "Restore Lootbox metadata", filters: [{ name: "SQLite database", extensions: ["db"] }] });
+                if (!path || Array.isArray(path)) return;
+                setPendingRestorePath(path);
+              })().catch((caught) => reportError(caught, "backup-restore-picker"))}>Restore backup</Button>
+            </div>
+          </section>
+          <section className="space-y-3 border-t py-4">
+            <div className="mb-2 flex items-start gap-2.5">
+              <HardDrive className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <div><h3 className="text-xs font-medium">Preview cache</h3>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              {cacheStatus ? `${cacheStatus.thumbnailFiles.toLocaleString()} files · ${formatBytes(cacheStatus.thumbnailBytes)} · ${cacheStatus.orphanFiles.toLocaleString()} orphaned` : "Loading…"}
+            </p></div></div>
+            <div className="flex flex-wrap gap-2 pl-6.5">
+              <Button type="button" variant="outline" size="sm" className="rounded-sm text-xs" onClick={() => void api.cleanCache().then((status) => queryClient.setQueryData(["cache-status"], status)).catch((caught) => reportError(caught, "cache-clean"))}>Clean unused</Button>
+              <Button type="button" variant="outline" size="sm" className="rounded-sm text-xs" onClick={() => {
+                setSettingsMessage("Regenerating image previews…");
+                void api.regenerateImageThumbnails().then((status) => {
+                  queryClient.setQueryData(["cache-status"], status);
+                  setSettingsMessage("Image previews regenerated; model previews regenerate as they appear.");
+                  return refresh();
+                }).catch((caught) => reportError(caught, "cache-regenerate"));
+              }}>Regenerate</Button>
+              <Button type="button" variant="outline" size="sm" className="rounded-sm text-xs text-destructive" onClick={() => setConfirmClearCache(true)}>Clear all previews</Button>
+            </div>
+          </section>
+          <section className="space-y-2 border-t pt-4">
+            <div className="flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-xs font-medium"><Activity className="size-3.5 text-muted-foreground" /> Diagnostics</h3>
+              <Button type="button" variant="ghost" size="sm" className="rounded-sm text-xs" onClick={() => void navigator.clipboard.writeText(diagnostics.map((entry) => `${new Date(entry.timestamp * 1000).toISOString()} [${entry.context}] ${entry.message}`).join("\n")).then(() => setNotice("Diagnostics copied")).catch((caught) => reportError(caught, "copy-diagnostics"))}>Copy details</Button>
+            </div>
+            <div className="quiet-scrollbar max-h-28 overflow-y-auto rounded-sm border bg-muted/10 p-2 font-mono text-[11px] text-muted-foreground">
+              {diagnostics.length === 0 ? "No errors recorded this session." : diagnostics.slice(-20).reverse().map((entry, index) => <div key={`${entry.timestamp}-${index}`} className="mb-1 break-words">[{entry.context}] {entry.message}</div>)}
+            </div>
+          </section>
+          {settingsMessage && <p className="text-[11px] text-primary">{settingsMessage}</p>}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={confirmProjectRemoval !== null} onOpenChange={(open) => { if (!open) setConfirmProjectRemoval(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Forget {confirmProjectRemoval?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>Lootbox will remove the project and its export history from this library. Files already copied into the Godot project stay in place.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => confirmProjectRemoval && void forgetGodotProject(confirmProjectRemoval)}>Forget project</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmPurge !== null} onOpenChange={(open) => { if (!open) setConfirmPurge(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Purge missing records?</AlertDialogTitle>
+            <AlertDialogDescription>{confirmPurge ? `${confirmPurge.missingAssetCount.toLocaleString()} missing records will be permanently removed from ${confirmPurge.name}. Source folders and files are never deleted.` : ""}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => confirmPurge && void purgeMissingRecords(confirmPurge)}>Purge records</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={pendingRestorePath !== null} onOpenChange={(open) => { if (!open) setPendingRestorePath(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restore this metadata backup?</AlertDialogTitle>
+            <AlertDialogDescription>Your current library metadata will be replaced after Lootbox creates a new safety backup. Asset source files are not affected.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void restoreSelectedBackup()}>Restore backup</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmClearCache} onOpenChange={setConfirmClearCache}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear every generated preview?</AlertDialogTitle>
+            <AlertDialogDescription>Thumbnails and generated model previews will be removed. They regenerate as assets appear, and source files remain untouched.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => void clearAllPreviews()}>Clear previews</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {importing && (
+        <div className="fixed right-4 bottom-4 z-50 w-80 rounded-lg border bg-popover/95 p-4 text-xs shadow-xl backdrop-blur-md">
+          <div className="mb-3 flex items-start gap-2.5">
+            <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-primary" />
+            <div className="min-w-0 flex-1">
+            <span className="block font-medium">
+              {!importProgress
+                ? "Waiting to import"
+                : importProgress.phase === "scanning"
+                ? "Scanning files"
+                : importProgress.phase === "hashing"
+                  ? "Checking file contents"
+                : importProgress.phase === "finalizing"
+                  ? "Finishing import"
+                  : "Importing"}
+            </span>
+            <span className="mt-0.5 block text-[11px] text-muted-foreground">
+              {pendingImportCount > 1 ? `${pendingImportCount} packs remaining` : "1 pack remaining"}
+            </span>
+            </div>
+            {importProgress && importProgress.total > 0 && (
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                {importProgress.current.toLocaleString()} / {importProgress.total.toLocaleString()}
+              </span>
+            )}
+          </div>
+          <Progress
+            value={
+              importProgress && importProgress.total > 0
+                ? (importProgress.current / importProgress.total) * 100
+                : null
+            }
+            className="gap-0"
+          />
+          {importProgress?.path && (
+            <p
+              className="mt-2 truncate font-mono text-[11px] text-muted-foreground"
+              title={importProgress.path}
+            >
+              {importProgress.path}
+            </p>
+          )}
+          <div className="mt-3 flex items-center justify-between border-t pt-2.5">
+            <span className="text-[11px] text-muted-foreground">
+              {pendingImportCount > 1 ? `${pendingImportCount - 1} waiting` : ""}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              className="h-7 text-[11px] text-muted-foreground"
+              onClick={() => void cancelImports().catch((caught) => reportError(caught, "cancel-import"))}
+              disabled={!activeImportJobId}
+            >
+              Cancel imports
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;

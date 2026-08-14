@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lootbox
+GenericName=Game Asset Manager
+Comment=Browse and organize your game assets
+Exec=/usr/bin/lootbox
+Icon=lootbox
+Terminal=false
+Categories=Development;
+Keywords=assets;game development;textures;models;Godot;
+StartupNotify=true
+StartupWMClass=lootbox
