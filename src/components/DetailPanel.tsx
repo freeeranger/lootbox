@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import type { RefObject } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Clipboard, ExternalLink, FolderOpen, Plus, X } from "lucide-react";
+import { Clipboard, ExternalLink, FolderOpen, Plus, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -33,6 +34,8 @@ interface Props {
   asset: Asset;
   selectedCount: number;
   selectedAssets: Asset[];
+  tagInputRef: RefObject<HTMLInputElement | null>;
+  busy: boolean;
   collections: CollectionSummary[];
   onAddTag: (name: string) => Promise<void>;
   onRemoveTag: (name: string) => Promise<void>;
@@ -44,7 +47,6 @@ interface Props {
   onClassification: (assetType?: string, mapRole?: string) => Promise<void>;
   onGroup: (action: "merge" | "split") => Promise<void>;
   onResetClassification: () => Promise<void>;
-  onPreviewError: (message: string) => void;
   onAddCollection: () => void;
 }
 
@@ -129,17 +131,37 @@ function textureResourceRank(resource: AssetResource) {
   return [(role < 0 ? roleOrder.length : role), -resolution] as const;
 }
 
-function Preview({ asset, onModelStats, onError }: { asset: PreviewAsset; onModelStats: (stats: ModelStats) => void; onError: (message: string) => void }) {
+function Preview({ asset, onModelStats }: { asset: PreviewAsset; onModelStats: (stats: ModelStats) => void }) {
   const frame = "mx-4 h-[232px] overflow-hidden rounded-md border bg-muted/10";
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => setFailed(false), [asset.absolutePath]);
+
+  if (failed) {
+    return (
+      <div className={`${frame} grid place-items-center px-6 text-center`} role="status">
+        <div>
+          <AssetTypeIcon type={asset.assetType} size={32} strokeWidth={1.25} />
+          <p className="mt-2 text-xs text-muted-foreground">Preview unavailable for this file.</p>
+          <Button type="button" variant="outline" size="xs" className="mt-3 rounded-sm" onClick={() => { setFailed(false); setAttempt((current) => current + 1); }}>
+            <RotateCcw /> Retry preview
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (["image", "texture"].includes(asset.assetType) && browserImages.has(asset.extension)) {
     return (
       <div className={`${frame} checkerboard p-2`}>
         <div className="relative size-full min-h-0 min-w-0">
           <img
+            key={attempt}
             src={convertFileSrc(asset.absolutePath)}
             alt={asset.name}
             className="absolute inset-0 size-full object-contain"
+            onError={() => setFailed(true)}
           />
         </div>
       </div>
@@ -150,10 +172,12 @@ function Preview({ asset, onModelStats, onError }: { asset: PreviewAsset; onMode
     return (
       <div className={frame}>
         <video
+          key={attempt}
           src={convertFileSrc(asset.absolutePath)}
           controls
           preload="metadata"
           className="size-full object-contain"
+          onError={() => setFailed(true)}
         />
       </div>
     );
@@ -167,7 +191,7 @@ function Preview({ asset, onModelStats, onError }: { asset: PreviewAsset; onMode
           </div>
         }
       >
-      <ModelPreview path={asset.absolutePath} onStats={onModelStats} onError={onError} />
+      <ModelPreview path={asset.absolutePath} onStats={onModelStats} />
       </Suspense>
     );
   }
@@ -202,6 +226,7 @@ function IconAction({
             size="icon-sm"
             className="rounded-sm text-muted-foreground"
             onClick={onClick}
+            aria-label={label}
           />
         }
       >
@@ -216,6 +241,8 @@ export function DetailPanel({
   asset,
   selectedCount,
   selectedAssets,
+  tagInputRef,
+  busy,
   collections,
   onAddTag,
   onRemoveTag,
@@ -227,7 +254,6 @@ export function DetailPanel({
   onClassification,
   onGroup,
   onResetClassification,
-  onPreviewError,
   onAddCollection,
 }: Props) {
   const [tag, setTag] = useState("");
@@ -274,7 +300,7 @@ export function DetailPanel({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
             <h2 className="truncate text-xs font-semibold">{asset.name}</h2>
-            {selectedCount > 1 && <span className="shrink-0 text-[11px] text-muted-foreground">{selectedCount} selected</span>}
+            {selectedCount > 1 && <span className="shrink-0 text-[11px] text-muted-foreground"><span>{selectedCount.toLocaleString()} selected</span><span> · editing all</span></span>}
           </div>
           <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
             {previewAsset.absolutePath === asset.absolutePath
@@ -282,7 +308,7 @@ export function DetailPanel({
               : `Previewing ${previewAsset.name} · .${previewAsset.extension}`}
           </p>
         </div>
-        <div className="flex items-center">
+        {selectedCount === 1 && <div className="flex items-center">
           <IconAction label="Open previewed file" onClick={() => previewAsset.absolutePath === asset.absolutePath ? onOpen() : onOpenVariant(previewAsset.absolutePath)}>
             <ExternalLink />
           </IconAction>
@@ -295,15 +321,16 @@ export function DetailPanel({
           >
             <Clipboard />
           </IconAction>
-        </div>
+        </div>}
       </header>
 
-      <div className="pt-4">
-        <Preview asset={previewAsset} onModelStats={setModelStats} onError={onPreviewError} />
-      </div>
+      {selectedCount === 1 && <div className="pt-4">
+        <Preview asset={previewAsset} onModelStats={setModelStats} />
+      </div>}
 
       <div className="space-y-5 px-4 py-5 [&>section>h3]:text-[11px] [&>section>h3]:font-medium [&>section>h3]:text-foreground">
-        <section>
+        {busy && <p className="rounded-sm border bg-muted/20 px-2 py-1.5 text-[11px] text-muted-foreground" role="status" aria-live="polite">Saving changes to {selectedCount.toLocaleString()} {selectedCount === 1 ? "asset" : "assets"}…</p>}
+        {selectedCount === 1 ? <section>
           <h3 className="mb-2 text-[11px] font-medium">Info</h3>
           <dl className="grid grid-cols-[76px_minmax(0,1fr)] gap-y-1.5 text-[11px]">
             <dt className="text-muted-foreground">Category</dt>
@@ -433,13 +460,22 @@ export function DetailPanel({
               </div>
             </div>
           )}
-        </section>
+        </section> : <section className="rounded-md border bg-muted/10 p-3">
+          <h3 className="mb-1.5">Bulk selection</h3>
+          <p className="text-xs">Editing all {selectedCount.toLocaleString()} selected assets</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {allSelectedKnown
+              ? `${new Set(selectedAssets.map((item) => item.assetType)).size} asset types · ${new Set(selectedAssets.map((item) => item.packId)).size} source packs · mixed values are labeled below`
+              : "The selection includes unloaded results; review the complete list before changing shared metadata."}
+          </p>
+          {selectedAssets.some((item) => item.missing) && <p className="mt-1 text-[11px] text-destructive">{selectedAssets.filter((item) => item.missing).length.toLocaleString()} missing from disk</p>}
+        </section>}
 
         <Separator />
 
         <section>
-          <h3 className="mb-2">
-            Classification & grouping
+          <h3 className="mb-2 flex items-center justify-between gap-2">
+            <span>Classification & grouping</span><span className="font-normal text-muted-foreground">{selectedCount.toLocaleString()} {selectedCount === 1 ? "asset" : "assets"}</span>
           </h3>
           <div className="grid grid-cols-2 gap-1.5">
             <div>
@@ -450,6 +486,7 @@ export function DetailPanel({
                 ...Object.entries(assetTypeNames).map(([value, label]) => ({ value, label })),
               ]}
               value={selectedType}
+              disabled={busy}
               onValueChange={(value) => { if (value && value !== "__mixed") void onClassification(value); }}
             >
               <SelectTrigger size="sm" aria-label="Asset type" className="w-full rounded-sm text-[11px]">
@@ -474,7 +511,7 @@ export function DetailPanel({
                 ...["color", "normal", "normal_gl", "normal_dx", "roughness", "metalness", "occlusion", "height", "opacity", "emissive", "specular", "glossiness"].map((value) => ({ value, label: readableMapRole(value) })),
               ]}
               value={selectedMapRole}
-              disabled={selectedType !== "texture"}
+              disabled={busy || selectedType !== "texture"}
               onValueChange={(value) => { if (value && value !== "__mixed") void onClassification(undefined, value); }}
             >
               <SelectTrigger size="sm" aria-label="Texture map role" className="w-full rounded-sm text-[11px]">
@@ -494,17 +531,17 @@ export function DetailPanel({
           </div>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {selectedCount > 1 && (
-              <Button type="button" variant="outline" size="xs" className="rounded-sm" disabled={!canGroupSelection} title={canGroupSelection ? "Group selected assets" : "Assets from different packs cannot be grouped"} onClick={() => void onGroup("merge")}>Group selected</Button>
+              <Button type="button" variant="outline" size="xs" className="rounded-sm" disabled={busy || !canGroupSelection} title={canGroupSelection ? "Group selected assets" : "Assets from different packs cannot be grouped"} onClick={() => void onGroup("merge")}>Group selected</Button>
             )}
             {(selectedCount > 1 || asset.variants.length > 1 || asset.resources.length > 0) && (
-              <Button type="button" variant="outline" size="xs" className="rounded-sm" onClick={() => void onGroup("split")}>Remove from group</Button>
+              <Button type="button" variant="outline" size="xs" className="rounded-sm" disabled={busy} onClick={() => void onGroup("split")}>Remove from group</Button>
             )}
             {asset.manualClassification && (
-              <Button type="button" variant="ghost" size="xs" className="rounded-sm" onClick={() => void onResetClassification()}>Use automatic</Button>
+              <Button type="button" variant="ghost" size="xs" className="rounded-sm" disabled={busy} onClick={() => void onResetClassification()}>Use automatic</Button>
             )}
           </div>
           <p className="mt-1.5 text-[11px] text-muted-foreground">
-            Manual choices survive rescans and classifier updates.
+            Type controls how Lootbox previews a file. Texture map describes its material role; grouping keeps related files together while browsing and exporting. Manual choices survive rescans.
           </p>
         </section>
 
@@ -570,7 +607,7 @@ export function DetailPanel({
         <Separator />
 
         <section>
-          <h3 className="mb-2 text-[11px] font-medium">Tags</h3>
+          <h3 className="mb-2 flex items-center justify-between gap-2 text-[11px] font-medium"><span>Tags</span><span className="font-normal text-muted-foreground">{selectedCount.toLocaleString()} {selectedCount === 1 ? "asset" : "assets"}</span></h3>
           {visibleTags.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1">
               {visibleTags.map(({ name, partial }) => (
@@ -581,6 +618,7 @@ export function DetailPanel({
                   size="xs"
                   className="h-6 rounded-sm px-1.5 text-[11px] font-normal"
                   onClick={() => void onRemoveTag(name)}
+                  disabled={busy}
                   title={partial ? `Remove ${name} from every selected asset` : "Remove tag"}
                 >
                   {name}
@@ -593,13 +631,15 @@ export function DetailPanel({
           {selectedCount > 1 && !allSelectedKnown && <p className="mb-2 text-[11px] text-muted-foreground">Tag values are unavailable for part of the selection.</p>}
           <form className="flex gap-1.5" onSubmit={submitTag}>
             <Input
+              ref={tagInputRef}
               value={tag}
               onChange={(event) => setTag(event.target.value)}
               placeholder={selectedCount > 1 ? `Add tag to ${selectedCount} assets` : "Add tag"}
               aria-label={selectedCount > 1 ? `Add tag to ${selectedCount} assets` : "Add tag"}
               className="h-7 rounded-sm text-xs"
+              disabled={busy}
             />
-            <Button type="submit" variant="outline" size="icon-sm" className="rounded-sm">
+            <Button type="submit" variant="outline" size="icon-sm" className="rounded-sm" disabled={busy}>
               <Plus />
               <span className="sr-only">Add tag</span>
             </Button>
@@ -609,7 +649,7 @@ export function DetailPanel({
         <Separator />
 
         <section>
-          <h3 className="mb-1 text-[11px] font-medium">Collections</h3>
+          <h3 className="mb-1 flex items-center justify-between gap-2 text-[11px] font-medium"><span>Collections</span><span className="font-normal text-muted-foreground">{selectedCount.toLocaleString()} {selectedCount === 1 ? "asset" : "assets"}</span></h3>
           <div className="space-y-0.5">
             {collections.map((collection) => {
               const memberships = selectedAssets.map((item) => item.collectionIds.includes(collection.id));
@@ -625,6 +665,7 @@ export function DetailPanel({
                   <Checkbox
                     checked={included}
                     indeterminate={mixed}
+                    disabled={busy}
                     onCheckedChange={(checked) =>
                       void onMembership(collection.id, Boolean(checked))
                     }
@@ -634,7 +675,7 @@ export function DetailPanel({
               );
             })}
             {collections.length === 0 && (
-              <Button type="button" variant="outline" size="sm" className="mt-1" onClick={onAddCollection}>
+              <Button type="button" variant="outline" size="sm" className="mt-1" onClick={onAddCollection} disabled={busy}>
                 <Plus /> New collection
               </Button>
             )}

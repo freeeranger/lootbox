@@ -17,7 +17,7 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.38", features = ["bundled", "backup"] }
+rusqlite = { version = "0.38", features = ["bundled", "backup", "collation"] }
 walkdir = "2"
 imagesize = "0.14"
 image = { version = "0.25", default-features = false, features = ["bmp", "dds", "gif", "hdr", "jpeg", "png", "tga", "tiff", "webp"] }

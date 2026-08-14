@@ -130,17 +130,37 @@ export function AudioPreview({ path }: Props) {
     }
   }
 
-  async function seek(event: React.MouseEvent<HTMLCanvasElement>) {
+  async function seekTo(nextPosition: number) {
     if (duration <= 0) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const nextPosition =
-      Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * duration;
     setError(null);
     try {
-      await seekAudioPlayback(path, nextPosition);
+      await seekAudioPlayback(path, Math.max(0, Math.min(duration, nextPosition)));
     } catch (caught) {
       setError(String(caught));
     }
+  }
+
+  function seekFromPointer(event: React.MouseEvent<HTMLDivElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    void seekTo(((event.clientX - bounds.left) / bounds.width) * duration);
+  }
+
+  function seekWithKeyboard(event: React.KeyboardEvent<HTMLDivElement>) {
+    const step = Math.max(1, duration / 100);
+    const positions: Record<string, number> = {
+      ArrowLeft: position - step,
+      ArrowDown: position - step,
+      ArrowRight: position + step,
+      ArrowUp: position + step,
+      PageDown: position - duration / 10,
+      PageUp: position + duration / 10,
+      Home: 0,
+      End: duration,
+    };
+    if (!(event.key in positions)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void seekTo(positions[event.key]!);
   }
 
   return (
@@ -153,12 +173,20 @@ export function AudioPreview({ path }: Props) {
         void toggle();
       }}
     >
-      <canvas
-        ref={canvasRef}
-        aria-label="Seek audio"
-        className="h-14 w-full cursor-pointer"
-        onClick={(event) => void seek(event)}
-      />
+      <div
+        role="slider"
+        tabIndex={0}
+        aria-label="Audio position"
+        aria-valuemin={0}
+        aria-valuemax={Math.max(0, Math.round(duration))}
+        aria-valuenow={Math.max(0, Math.round(position))}
+        aria-valuetext={`${formatTime(position)} of ${formatTime(duration)}`}
+        className="h-14 w-full cursor-pointer rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        onClick={seekFromPointer}
+        onKeyDown={seekWithKeyboard}
+      >
+        <canvas ref={canvasRef} aria-hidden="true" className="size-full" />
+      </div>
       <div className="flex items-center gap-2">
         <Button
           type="button"
@@ -178,7 +206,14 @@ export function AudioPreview({ path }: Props) {
           {path.split(".").pop()}
         </span>
       </div>
-      {error && <p className="truncate text-[11px] text-destructive" title={error}>{error}</p>}
+      {error && (
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-[11px] text-destructive">Audio preview is unavailable. Try opening the source file.</p>
+          <Button type="button" variant="ghost" size="xs" className="shrink-0 text-[11px]" onClick={() => void navigator.clipboard.writeText(error)}>
+            Copy technical details
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

@@ -82,6 +82,8 @@ import type {
   AssetType,
   ImportProgress,
   FilterOptions,
+  GodotExportPreview,
+  GodotExportResult,
   LibrarySelection,
   LibrarySnapshot,
   PackSummary,
@@ -101,6 +103,7 @@ const emptyFilterOptions: FilterOptions = { extensions: [], mapRoles: [], tags: 
 
 const assetPageSize = 160;
 const searchDebounceMs = 300;
+const guardedBulkEditThreshold = 10;
 const clearedFilters = { extension: "", mapRole: "", tag: "", minWidth: "", minConfidence: "", status: "" };
 type AssetFilters = typeof clearedFilters;
 
@@ -262,7 +265,7 @@ function App() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [view, setView] = useState<"grid" | "list">("grid");
+  const [view, setView] = useState<"grid" | "list">(() => window.localStorage.getItem("lootbox:asset-view") === "list" ? "list" : "grid");
   const [sort, setSort] = useState<AssetSort>(() => {
     const saved = window.localStorage.getItem("lootbox:asset-sort");
     return saved === "newest" || saved === "largest" || saved === "type"
@@ -280,8 +283,10 @@ function App() {
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
   const [activeImportJobId, setActiveImportJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorContext, setErrorContext] = useState("ui");
   const [notice, setNotice] = useState<string | null>(null);
   const [undoRemoval, setUndoRemoval] = useState<{ ids: number[]; label: string } | null>(null);
+  const [metadataUndo, setMetadataUndo] = useState<{ label: string; run: () => Promise<void> } | null>(null);
   const [creatingCollection, setCreatingCollection] = useState(false);
   const [addSelectionToNewCollection, setAddSelectionToNewCollection] = useState(false);
   const [collectionName, setCollectionName] = useState("");
@@ -291,6 +296,20 @@ function App() {
   const [confirmPurge, setConfirmPurge] = useState<PackSummary | null>(null);
   const [pendingRestorePath, setPendingRestorePath] = useState<string | null>(null);
   const [confirmClearCache, setConfirmClearCache] = useState(false);
+  const [pendingBulkMutation, setPendingBulkMutation] = useState<{
+    title: string;
+    description: string;
+    run: () => Promise<void>;
+  } | null>(null);
+  const [editingSelection, setEditingSelection] = useState(false);
+  const [godotExport, setGodotExport] = useState<{
+    project: ProjectSummary;
+    ids: number[];
+    preview: GodotExportPreview | null;
+    result: GodotExportResult | null;
+    loading: boolean;
+    exporting: boolean;
+  } | null>(null);
   const [renamingPack, setRenamingPack] = useState<PackSummary | null>(null);
   const [packName, setPackName] = useState("");
   const [filters, setFilters] = useState<AssetFilters>({ ...clearedFilters });
@@ -298,8 +317,12 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [godotPickerOpen, setGodotPickerOpen] = useState(false);
+  const [reviewSelectionOpen, setReviewSelectionOpen] = useState(false);
+  const [reviewSelectionLimit, setReviewSelectionLimit] = useState(250);
   const [settingsMessage, setSettingsMessage] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const tagInputRef = useRef<HTMLInputElement>(null);
   const assetScrollRef = useRef<HTMLDivElement>(null);
   const selectedIdsRef = useRef<Set<number>>(new Set());
   const selectedIdRef = useRef<number | null>(null);
@@ -488,9 +511,20 @@ function App() {
       .map(([key, value]) => ({ key, label: labels[key](value) }));
   }, [filters]);
 
+  const selectionSummary = useMemo(() => {
+    if (selectedIds.size === 0) return "";
+    if (selectedAssets.length !== selectedIds.size) {
+      return `${selectedIds.size.toLocaleString()} selected · includes unloaded results`;
+    }
+    const typeCount = new Set(selectedAssets.map((asset) => asset.assetType)).size;
+    const packCount = new Set(selectedAssets.map((asset) => asset.packId)).size;
+    return `${selectedIds.size.toLocaleString()} selected · ${typeCount} ${typeCount === 1 ? "type" : "types"} · ${packCount} ${packCount === 1 ? "pack" : "packs"}`;
+  }, [selectedAssets, selectedIds.size]);
+
   const reportError = useCallback((caught: unknown, context = "ui") => {
     const message = errorMessage(caught);
     setError(message);
+    setErrorContext(context);
     void api.logDiagnostic("error", context, message);
   }, []);
   const loadSnapshot = useCallback(async () => {
@@ -508,17 +542,14 @@ function App() {
   }, [reportError, serverQueryError]);
 
   useEffect(() => {
-    if (error) void api.logDiagnostic("error", "ui", error);
-  }, [error]);
-
-  useEffect(() => {
     if (!notice || error) return;
     const timer = window.setTimeout(() => {
       setNotice(null);
       setUndoRemoval(null);
-    }, undoRemoval ? 10_000 : 4_000);
+      setMetadataUndo(null);
+    }, undoRemoval || metadataUndo ? 10_000 : 4_000);
     return () => window.clearTimeout(timer);
-  }, [error, notice, undoRemoval]);
+  }, [error, metadataUndo, notice, undoRemoval]);
 
   const refresh = useCallback(async () => {
     await Promise.all([
@@ -543,6 +574,10 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("lootbox:asset-sort-direction", sortDirection);
   }, [sortDirection]);
+
+  useEffect(() => {
+    window.localStorage.setItem("lootbox:asset-view", view);
+  }, [view]);
 
   function clampPanelWidth(side: "left" | "right", width: number) {
     const otherWidth = side === "left" ? rightPanelWidth : leftPanelWidth;
@@ -577,8 +612,16 @@ function App() {
   }
 
   function resizePanelWithKeyboard(side: "left" | "right", event: React.KeyboardEvent) {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const minimum = side === "left" ? 168 : 260;
+    const maximum = side === "left" ? 320 : 480;
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
+    if (event.key === "Home" || event.key === "End") {
+      const width = event.key === "Home" ? minimum : clampPanelWidth(side, maximum);
+      if (side === "left") setLeftPanelWidth(width);
+      else setRightPanelWidth(width);
+      return;
+    }
     const direction = event.key === "ArrowRight" ? 1 : -1;
     if (side === "left") {
       setLeftPanelWidth((width) => clampPanelWidth(side, width + direction * 12));
@@ -652,8 +695,28 @@ function App() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        if (event.shiftKey) {
+          event.preventDefault();
+          setFilterDraft(filters);
+          setFiltersOpen(true);
+          return;
+        }
         event.preventDefault();
         searchRef.current?.focus();
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "e" && selectedIdsRef.current.size > 0) {
+        event.preventDefault();
+        setGodotPickerOpen(true);
+      }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "c" && selectedIdsRef.current.size > 0) {
+        event.preventDefault();
+        setAddSelectionToNewCollection(true);
+        setCreatingCollection(true);
+      }
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && !isTypingTarget(event.target)) {
+        if (event.key.toLowerCase() === "g") setView("grid");
+        if (event.key.toLowerCase() === "l") setView("list");
+        if (event.key.toLowerCase() === "t" && selectedIdsRef.current.size > 0) tagInputRef.current?.focus();
       }
       if (event.key === "?" && !isTypingTarget(event.target)) {
         event.preventDefault();
@@ -665,7 +728,7 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [clearAssetSelection]);
+  }, [clearAssetSelection, filters]);
 
   async function runQueuedImport(path: string) {
     const jobId = crypto.randomUUID();
@@ -718,16 +781,17 @@ function App() {
       if (lastPack) setSelection({ kind: "pack", packId: lastPack.id });
       await loadSnapshot();
       if (failures.length > 0) {
-        setError(
+        reportError(
           failures.length === 1
             ? failures[0]
             : `${failures.length} folders could not be imported: ${failures.join("; ")}`,
+          "import-pack",
         );
       } else if (imported.length > 0) {
         setNotice(imported.length === 1 ? `${imported[0].name} imported` : `${imported.length} packs imported`);
       }
     } catch (caught) {
-      setError(errorMessage(caught));
+      reportError(caught, "import-picker");
     }
   }
 
@@ -751,7 +815,7 @@ function App() {
         setSelection({ kind: "collection", collectionId: collection.id });
       }
     } catch (caught) {
-      setError(errorMessage(caught));
+      reportError(caught, "collection-create");
     }
   }
 
@@ -826,33 +890,71 @@ function App() {
     }
   }
 
-  async function addSelectionToGodot(projectId: number, projectName?: string) {
+  async function addSelectionToGodot(projectId: number, projectName?: string, projectRootPath?: string) {
     const ids = selectedIds.size > 0
       ? [...selectedIds]
       : selectedAsset ? [selectedAsset.id] : [];
     if (ids.length === 0) return;
+    const project = snapshot.projects.find((item) => item.id === projectId) ?? {
+      id: projectId,
+      name: projectName ?? "Godot project",
+      rootPath: projectRootPath ?? "",
+      assetCount: 0,
+      available: true,
+    };
+    setError(null);
+    setNotice(null);
+    setUndoRemoval(null);
+    setGodotExport({ project, ids, preview: null, result: null, loading: true, exporting: false });
     try {
-      setError(null);
-      setNotice(null);
-      setUndoRemoval(null);
-      const result = await api.exportAssetsToGodot(projectId, ids);
-      const project = snapshot.projects.find((item) => item.id === projectId);
-      setNotice(
-        `${result.copied} added to ${projectName ?? project?.name ?? "Godot"}${result.unchanged > 0 ? ` · ${result.unchanged} already current` : ""}`,
-      );
+      const preview = await api.previewAssetsToGodot(projectId, ids);
+      setGodotExport((current) => current && current.project.id === projectId
+        ? { ...current, preview, loading: false }
+        : current);
+    } catch (caught) {
+      setGodotExport(null);
+      reportError(caught, "godot-export-preview");
+    }
+  }
+
+  async function confirmGodotExport() {
+    if (!godotExport?.preview || godotExport.exporting) return;
+    setGodotExport((current) => current ? { ...current, exporting: true } : current);
+    try {
+      const result = await api.exportAssetsToGodot(godotExport.project.id, godotExport.ids);
+      setGodotExport((current) => current ? { ...current, result, exporting: false } : current);
       await loadSnapshot();
     } catch (caught) {
+      setGodotExport((current) => current ? { ...current, exporting: false } : current);
       reportError(caught, "godot-export");
     }
   }
 
   async function mutateSelected(mutation: () => Promise<void>) {
+    if (editingSelection) return false;
+    setEditingSelection(true);
     try {
       await mutation();
       await refresh();
+      return true;
     } catch (caught) {
-      setError(errorMessage(caught));
+      reportError(caught, "asset-edit");
+      return false;
+    } finally {
+      setEditingSelection(false);
     }
+  }
+
+  function guardedBulkMutation(
+    title: string,
+    description: string,
+    mutation: () => Promise<void>,
+  ) {
+    if (selectedIdsRef.current.size >= guardedBulkEditThreshold) {
+      setPendingBulkMutation({ title, description, run: async () => { await mutateSelected(mutation); } });
+      return Promise.resolve();
+    }
+    return mutateSelected(mutation).then(() => undefined);
   }
 
   async function deleteCurrentSource() {
@@ -868,7 +970,7 @@ function App() {
       clearAssetSelection();
       await loadSnapshot();
     } catch (caught) {
-      setError(errorMessage(caught));
+      reportError(caught, "source-delete");
     }
   }
 
@@ -878,7 +980,7 @@ function App() {
       await runQueuedImport(pack.rootPath);
       await refresh();
     } catch (caught) {
-      setError(errorMessage(caught));
+      reportError(caught, "rescan-pack");
     }
   }
 
@@ -895,7 +997,7 @@ function App() {
       setRenamingPack(null);
       await loadSnapshot();
     } catch (caught) {
-      setError(errorMessage(caught));
+      reportError(caught, "rename-pack");
     }
   }
 
@@ -911,7 +1013,7 @@ function App() {
       await api.relocatePack(pack.id, path);
       await refresh();
     } catch (caught) {
-      setError(errorMessage(caught));
+      reportError(caught, "relocate-pack");
     }
   }
 
@@ -935,7 +1037,7 @@ function App() {
       setNotice(removed.length === 1 ? `${removed[0].name} removed` : `${removed.length} assets removed`);
       await refresh();
     } catch (caught) {
-      setError(errorMessage(caught));
+      reportError(caught, "remove-asset");
     }
   }
 
@@ -998,6 +1100,20 @@ function App() {
   const virtualRows = virtualizer.getVirtualItems();
   const lastVirtualRow = virtualRows.at(-1)?.index ?? -1;
 
+  const focusAssetAtIndex = useCallback((index: number) => {
+    const asset = assets[index];
+    if (!asset) return;
+    virtualizer.scrollToIndex(
+      view === "grid" ? Math.floor(index / gridColumns) : index,
+      { align: "auto" },
+    );
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById(`asset-option-${asset.id}`)?.focus();
+      });
+    });
+  }, [assets, gridColumns, view, virtualizer]);
+
   useEffect(() => {
     virtualizer.measure();
   }, [gridColumns, gridRowHeight, view, virtualizer]);
@@ -1007,6 +1123,53 @@ function App() {
   }, [assetRowCount, lastVirtualRow, loadMoreAssets]);
 
   const deletingPack = selection.kind === "pack" || selection.kind === "removed" || selection.kind === "missing";
+  const errorPresentation = useMemo(() => {
+    if (!error) return null;
+    if (errorContext.startsWith("godot-export")) return {
+      title: "Godot export didn’t finish",
+      message: "Check that the project is available, then review the export and try again. Project-owned files are never overwritten.",
+    };
+    if (errorContext.includes("import") || errorContext.includes("rescan")) return {
+      title: "The folder couldn’t be imported",
+      message: "Check that the folder is readable and still connected, then choose it again.",
+    };
+    if (errorContext === "server-query" || errorContext.includes("query")) return {
+      title: "The library couldn’t be refreshed",
+      message: "Your files are untouched. Retry the library refresh; technical details are available if it keeps failing.",
+    };
+    if (errorContext.includes("open") || errorContext.includes("reveal")) return {
+      title: "The file couldn’t be opened",
+      message: "It may have moved or the default application may be unavailable. Locate the source folder and try again.",
+    };
+    if (errorContext === "relocate-pack") return {
+      title: "The pack couldn’t be reconnected",
+      message: "Choose the folder that contains the original pack files and try again.",
+    };
+    if (errorContext.includes("backup")) return {
+      title: "The backup operation didn’t finish",
+      message: "The current library metadata is still available. Check the destination and try again.",
+    };
+    return {
+      title: "Lootbox couldn’t complete that action",
+      message: "Your source files are untouched. Try the action again or open Maintenance to inspect diagnostics.",
+    };
+  }, [error, errorContext]);
+
+  const errorRecovery = error ? (
+    errorContext.startsWith("godot-export") && godotExport
+      ? { label: "Review export", run: () => undefined }
+      : errorContext === "server-query" || errorContext.includes("query")
+      ? { label: "Retry", run: () => void refresh() }
+      : errorContext.includes("import")
+        ? { label: "Choose folder", run: () => void importPack() }
+        : errorContext === "relocate-pack" && selectedPack
+          ? { label: "Locate folder", run: () => void relocatePack(selectedPack) }
+          : errorContext === "open-asset" && selectedAsset
+            ? { label: "Reveal in folder", run: () => void api.revealAsset(selectedAsset.absolutePath).catch((caught) => reportError(caught, "reveal-asset")) }
+            : errorContext === "reveal-asset" && selectedAsset
+              ? { label: "Open file", run: () => void api.openAsset(selectedAsset.absolutePath).catch((caught) => reportError(caught, "open-asset")) }
+        : { label: "Open diagnostics", run: () => { setSettingsMessage(""); setSettingsOpen(true); } }
+  ) : null;
 
   const selectAsset = useCallback(
     (asset: Asset, event: React.MouseEvent<HTMLButtonElement>) => {
@@ -1045,14 +1208,25 @@ function App() {
   const openAsset = useCallback((asset: Asset) => {
     void api
       .openAsset(asset.absolutePath)
-      .catch((caught) => setError(errorMessage(caught)));
-  }, []);
+      .catch((caught) => reportError(caught, "open-asset"));
+  }, [reportError]);
 
   const selectAssetForContextMenu = useCallback((asset: Asset) => {
     if (selectedIdsRef.current.has(asset.id)) return;
     selectionAnchorRef.current = asset.id;
     selectedAssetCacheRef.current.set(asset.id, asset);
     applyAssetSelection(new Set([asset.id]), asset.id);
+  }, [applyAssetSelection]);
+
+  const deselectReviewedAsset = useCallback((id: number) => {
+    const next = new Set(selectedIdsRef.current);
+    next.delete(id);
+    const nextActive = selectedIdRef.current === id
+      ? (next.values().next().value ?? null)
+      : selectedIdRef.current;
+    if (selectionAnchorRef.current === id) selectionAnchorRef.current = nextActive;
+    applyAssetSelection(next, nextActive);
+    if (next.size === 0) setReviewSelectionOpen(false);
   }, [applyAssetSelection]);
 
   const copyAssetPath = useCallback((path: string) => {
@@ -1067,8 +1241,8 @@ function App() {
   const revealAsset = useCallback((asset: Asset) => {
     void api
       .revealAsset(asset.absolutePath)
-      .catch((caught) => setError(errorMessage(caught)));
-  }, []);
+      .catch((caught) => reportError(caught, "reveal-asset"));
+  }, [reportError]);
 
   const requestAssetRemoval = useCallback(
     (asset: Asset) => {
@@ -1099,7 +1273,11 @@ function App() {
   );
 
   const reportCardError = useCallback((caught: unknown) => {
-    setError(errorMessage(caught));
+    reportError(caught, "asset-action");
+  }, [reportError]);
+
+  const reportCardPreviewError = useCallback((asset: Asset, caught: unknown) => {
+    void api.logDiagnostic("warning", `asset-preview:${asset.relativePath}`, errorMessage(caught));
   }, []);
 
   const restoreAsset = useCallback(
@@ -1117,9 +1295,9 @@ function App() {
           clearAssetSelection();
           return refresh();
         })
-        .catch((caught) => setError(errorMessage(caught)));
+        .catch((caught) => reportError(caught, "restore-asset"));
     },
-    [assets, clearAssetSelection, refresh],
+    [assets, clearAssetSelection, refresh, reportError],
   );
 
   useEffect(() => {
@@ -1160,21 +1338,28 @@ function App() {
       const currentIndex = selectedId === null
         ? -1
         : assets.findIndex((asset) => asset.id === selectedId);
+      const keyboardTarget = event.target instanceof HTMLElement ? event.target : null;
+      const browserHasFocus = Boolean(keyboardTarget?.closest("[data-asset-browser], [data-asset-card]")) || document.activeElement === document.body;
+      const visibleRows = Math.max(1, Math.floor((assetScrollRef.current?.clientHeight ?? 440) / (view === "grid" ? gridRowHeight : 44)));
+      const pageStep = visibleRows * (view === "grid" ? gridColumns : 1);
       const directions: Record<string, number> = view === "grid"
         ? {
             ArrowLeft: -1,
             ArrowRight: 1,
             ArrowUp: -gridColumns,
             ArrowDown: gridColumns,
+            PageUp: -pageStep,
+            PageDown: pageStep,
           }
-        : { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1 };
+        : { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1, PageUp: -pageStep, PageDown: pageStep };
       const direction = directions[event.key];
-      if (direction !== undefined) {
+      if (browserHasFocus && (direction !== undefined || event.key === "Home" || event.key === "End")) {
         event.preventDefault();
-        const nextIndex = Math.max(
-          0,
-          Math.min(assets.length - 1, currentIndex < 0 ? 0 : currentIndex + direction),
-        );
+        const nextIndex = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? assets.length - 1
+            : Math.max(0, Math.min(assets.length - 1, currentIndex < 0 ? 0 : currentIndex + (direction ?? 0)));
         const nextAsset = assets[nextIndex];
         if (!nextAsset) return;
         if (event.shiftKey) {
@@ -1192,10 +1377,7 @@ function App() {
           selectionAnchorRef.current = nextAsset.id;
           applyAssetSelection(new Set([nextAsset.id]), nextAsset.id);
         }
-        virtualizer.scrollToIndex(
-          view === "grid" ? Math.floor(nextIndex / gridColumns) : nextIndex,
-          { align: "auto" },
-        );
+        focusAssetAtIndex(nextIndex);
         if (nextIndex >= assets.length - gridColumns * 2) void loadMoreAssets();
         return;
       }
@@ -1206,7 +1388,7 @@ function App() {
       } else if (event.key === " " && selectedAsset?.assetType === "audio" && !event.repeat) {
         event.preventDefault();
         void toggleAudioPlayback(selectedAsset.absolutePath).catch((caught) =>
-          setError(errorMessage(caught)),
+          reportError(caught, "audio-playback"),
         );
       } else if (
         event.key === "Delete" &&
@@ -1225,7 +1407,9 @@ function App() {
     confirmAssetRemoval.length,
     confirmDelete,
     creatingCollection,
+    focusAssetAtIndex,
     gridColumns,
+    gridRowHeight,
     loadMoreAssets,
     openAsset,
     query,
@@ -1262,7 +1446,7 @@ function App() {
         onRenamePack={startRenamePack}
         onRescanPack={(pack) => void rescanPack(pack)}
         onOpenPack={(pack) =>
-          void api.openAsset(pack.rootPath).catch((caught) => setError(errorMessage(caught)))
+          void api.openAsset(pack.rootPath).catch((caught) => reportError(caught, "open-pack"))
         }
         onRelocatePack={(pack) => void relocatePack(pack)}
         onForgetPack={requestForgetPack}
@@ -1291,6 +1475,10 @@ function App() {
         role="separator"
         aria-label="Resize library sidebar"
         aria-orientation="vertical"
+        aria-valuemin={168}
+        aria-valuemax={320}
+        aria-valuenow={Math.round(layoutLeftPanelWidth)}
+        aria-valuetext={`${Math.round(layoutLeftPanelWidth)} pixels`}
         tabIndex={0}
         className="group relative z-20 cursor-col-resize outline-none"
         onPointerDown={(event) => startPanelResize("left", event)}
@@ -1398,10 +1586,32 @@ function App() {
           </div>
         </header>
 
+        {activeFilters.length > 0 && (
+          <div className="quiet-scrollbar flex h-9 shrink-0 items-center gap-1.5 overflow-x-auto border-b px-4" aria-label="Active filters">
+            {activeFilters.map((filter) => (
+              <Button
+                key={filter.key}
+                type="button"
+                variant="secondary"
+                size="xs"
+                className="shrink-0 rounded-full px-2 text-[11px]"
+                onClick={() => setFilters((current) => ({ ...current, [filter.key]: "" }))}
+                aria-label={`Remove ${filter.label} filter`}
+              >
+                {filter.label}<X className="size-3" />
+              </Button>
+            ))}
+            <Button type="button" variant="ghost" size="xs" className="shrink-0 text-[11px] text-muted-foreground" onClick={() => setFilters({ ...clearedFilters })}>
+              Clear all
+            </Button>
+          </div>
+        )}
+
         <div className={cn("flex h-12 shrink-0 items-center justify-between border-b px-4", selectedIds.size > 0 && "bg-primary/[0.035]")}>
           {selectedIds.size > 0 ? (
             <div className="flex min-w-0 items-center gap-2">
-              <span className="text-xs font-medium">{selectedIds.size.toLocaleString()} selected</span>
+              <span className="truncate text-xs font-medium">{selectionSummary}</span>
+              <Button type="button" variant="ghost" size="xs" className="shrink-0 text-[11px] text-muted-foreground" onClick={() => setReviewSelectionOpen(true)}>Review selection</Button>
             </div>
           ) : (
             <div className="flex min-w-0 items-baseline gap-2">
@@ -1434,16 +1644,20 @@ function App() {
                   <DropdownMenuTrigger render={<Button type="button" variant="outline" size="sm" className="rounded-md" aria-label="Add to Godot" title="Add to Godot" />}>
                     <Gamepad2 /> <span className="max-[1150px]:hidden">Add to Godot</span>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuContent align="end" className="w-80">
                     {snapshot.projects.filter((project) => project.available).map((project) => (
-                      <DropdownMenuItem key={project.id} className="text-xs" onClick={() => void addSelectionToGodot(project.id)}>
-                        <Gamepad2 /> {project.name}
+                      <DropdownMenuItem key={project.id} className="items-start py-2 text-xs" onClick={() => void addSelectionToGodot(project.id)}>
+                        <Gamepad2 className="mt-0.5 shrink-0" />
+                        <span className="min-w-0">
+                          <span className="block truncate">{project.name}</span>
+                          <span className="block truncate font-mono text-[11px] text-muted-foreground">{project.rootPath}</span>
+                        </span>
                       </DropdownMenuItem>
                     ))}
                     {snapshot.projects.some((project) => project.available) && <DropdownMenuSeparator />}
                     <DropdownMenuItem className="text-xs" onClick={() => void (async () => {
                       const project = await addGodotProject(true);
-                      if (project) await addSelectionToGodot(project.id, project.name);
+                      if (project) await addSelectionToGodot(project.id, project.name, project.rootPath);
                     })()}>
                       <Plus /> Add Godot project…
                     </DropdownMenuItem>
@@ -1556,7 +1770,12 @@ function App() {
 
         <div
           ref={assetScrollRef}
+          data-asset-browser
           className="quiet-scrollbar min-h-0 flex-1 overflow-y-auto"
+          role={assets.length > 0 ? "listbox" : undefined}
+          aria-label={assets.length > 0 ? `${sectionTitle} assets` : undefined}
+          aria-multiselectable={assets.length > 0 ? true : undefined}
+          aria-busy={loading || loadingMore}
           onClick={(event) => {
             const target = event.target as HTMLElement;
             if (!target.closest("[data-asset-card]")) clearAssetSelection();
@@ -1633,7 +1852,11 @@ function App() {
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
                   >
-                    {rowAssets.map((asset) => (
+                    {rowAssets.map((asset, columnIndex) => {
+                      const optionIndex = view === "grid"
+                        ? virtualRow.index * gridColumns + columnIndex
+                        : virtualRow.index;
+                      return (
                       <AssetCard
                         key={asset.id}
                         asset={asset}
@@ -1650,8 +1873,14 @@ function App() {
                         dragPaths={selectedIds.has(asset.id) ? selectedDragPaths : [asset.absolutePath]}
                         onCopyPath={copyAssetPath}
                         onError={reportCardError}
+                        onPreviewError={reportCardPreviewError}
+                        optionId={`asset-option-${asset.id}`}
+                        optionIndex={optionIndex}
+                        optionCount={assetTotal}
+                        tabIndex={selectedId === asset.id || (selectedId === null && optionIndex === 0) ? 0 : -1}
                       />
-                    ))}
+                      );
+                    })}
                   </div>
                 );
               })}
@@ -1666,7 +1895,7 @@ function App() {
               ) : selection.kind === "project" ? (
                 <EmptyState icon={Gamepad2} title="No project assets" description="Use Add to Godot from an asset selection." />
               ) : snapshot.totalAssets === 0 ? (
-                <EmptyState icon={FolderPlus} title="No asset packs" description="Import folders to start browsing assets." action={{ label: "Import packs", onClick: () => void importPack() }} />
+                <EmptyState icon={FolderPlus} title="No asset packs" description="Import folders to build a local catalog. Lootbox indexes them in place and never modifies source files." action={{ label: "Import packs", onClick: () => void importPack() }} />
               ) : (
                 <EmptyState icon={SearchX} title="No matching assets" description="Try another search or clear the filters." action={activeFilters.length > 0 ? { label: "Clear filters", onClick: () => setFilters({ ...clearedFilters }) } : undefined} />
               )}
@@ -1679,6 +1908,10 @@ function App() {
         role="separator"
         aria-label="Resize details panel"
         aria-orientation="vertical"
+        aria-valuemin={260}
+        aria-valuemax={480}
+        aria-valuenow={Math.round(layoutRightPanelWidth)}
+        aria-valuetext={`${Math.round(layoutRightPanelWidth)} pixels`}
         tabIndex={0}
         className="group relative z-20 cursor-col-resize outline-none"
         onPointerDown={(event) => startPanelResize("right", event)}
@@ -1692,24 +1925,71 @@ function App() {
           asset={selectedAsset}
           selectedCount={Math.max(selectedIds.size, 1)}
           selectedAssets={selectedAssets}
+          tagInputRef={tagInputRef}
+          busy={editingSelection}
           collections={snapshot.collections}
-          onAddTag={(name) => mutateSelected(() => api.addTags([...selectedIds], name))}
-          onRemoveTag={(name) => mutateSelected(() => api.removeTags([...selectedIds], name))}
-          onMembership={(collectionId, included) =>
-            mutateSelected(() =>
-              api.setCollectionMemberships([...selectedIds], collectionId, included),
-            )
-          }
-          onClassification={(assetType, mapRole) =>
-            mutateSelected(() => api.setClassificationOverride([...selectedIds], assetType, mapRole))
-          }
-          onGroup={(action) =>
-            mutateSelected(() => api.setClassificationOverride([...selectedIds], undefined, undefined, action))
-          }
-          onResetClassification={() =>
-            mutateSelected(() => api.resetClassificationOverride([...selectedIds]))
-          }
-          onPreviewError={(message) => reportError(message, `model-preview:${selectedAsset.relativePath}`)}
+          onAddTag={async (name) => {
+            let changed: number[] = [];
+            if (await mutateSelected(async () => { changed = await api.addTags([...selectedIds], name); }) && changed.length > 0) {
+              setMetadataUndo({ label: `Undo adding “${name}”`, run: async () => { await api.removeTags(changed, name); await refresh(); } });
+              setNotice(`Added “${name}” to ${changed.length.toLocaleString()} assets`);
+            }
+          }}
+          onRemoveTag={async (name) => {
+            let changed: number[] = [];
+            if (await mutateSelected(async () => { changed = await api.removeTags([...selectedIds], name); }) && changed.length > 0) {
+              setMetadataUndo({ label: `Undo removing “${name}”`, run: async () => { await api.addTags(changed, name); await refresh(); } });
+              setNotice(`Removed “${name}” from ${changed.length.toLocaleString()} assets`);
+            }
+          }}
+          onMembership={async (collectionId, included) => {
+            const collection = snapshot.collections.find((item) => item.id === collectionId);
+            let changed: number[] = [];
+            if (await mutateSelected(async () => { changed = await api.setCollectionMemberships([...selectedIds], collectionId, included); }) && changed.length > 0) {
+              setMetadataUndo({ label: `Undo collection change`, run: async () => { await api.setCollectionMemberships(changed, collectionId, !included); await refresh(); } });
+              setNotice(`${included ? "Added to" : "Removed from"} ${collection?.name ?? "collection"} · ${changed.length.toLocaleString()} assets`);
+            }
+          }}
+          onClassification={(assetType, mapRole) => {
+            return guardedBulkMutation(
+              `Change classification for ${selectedIds.size.toLocaleString()} assets?`,
+              `This applies the new classification to every selected asset. Source files stay untouched.`,
+              async () => {
+                const snapshots = await api.setClassificationOverride([...selectedIds], assetType, mapRole);
+                if (snapshots.length > 0) {
+                  setMetadataUndo({ label: "Undo classification change", run: async () => {
+                    await api.restoreClassificationOverrides(snapshots);
+                    await refresh();
+                  } });
+                  setNotice(`Classification updated · ${snapshots.length.toLocaleString()} assets`);
+                }
+              },
+            );
+          }}
+          onGroup={(action) => guardedBulkMutation(
+            `${action === "merge" ? "Group" : "Separate"} ${selectedIds.size.toLocaleString()} assets?`,
+            `${action === "merge" ? "Grouping" : "Separating"} changes how all selected files are presented and exported. Source files stay untouched.`,
+            async () => {
+              const snapshots = await api.setClassificationOverride([...selectedIds], undefined, undefined, action);
+              if (snapshots.length > 0) {
+                setMetadataUndo({ label: `Undo ${action === "merge" ? "grouping" : "separation"}`, run: async () => {
+                  await api.restoreClassificationOverrides(snapshots);
+                  await refresh();
+                } });
+                setNotice(`${action === "merge" ? "Grouped" : "Separated"} ${snapshots.length.toLocaleString()} assets`);
+              }
+            },
+          )}
+          onResetClassification={() => mutateSelected(async () => {
+            const snapshots = await api.resetClassificationOverride([...selectedIds]);
+            if (snapshots.some((snapshot) => snapshot.existed)) {
+              setMetadataUndo({ label: "Undo automatic classification", run: async () => {
+                await api.restoreClassificationOverrides(snapshots);
+                await refresh();
+              } });
+              setNotice(`Automatic classification restored · ${snapshots.length.toLocaleString()} assets`);
+            }
+          }).then(() => undefined)}
           onAddCollection={() => {
             setAddSelectionToNewCollection(true);
             setCreatingCollection(true);
@@ -1718,15 +1998,15 @@ function App() {
           onOpen={() =>
             void api
               .openAsset(selectedAsset.absolutePath)
-              .catch((caught) => setError(errorMessage(caught)))
+              .catch((caught) => reportError(caught, "open-asset"))
           }
           onOpenVariant={(path) =>
-            void api.openAsset(path).catch((caught) => setError(errorMessage(caught)))
+            void api.openAsset(path).catch((caught) => reportError(caught, "open-asset"))
           }
           onRevealPath={(path) =>
             void api
               .revealAsset(path)
-              .catch((caught) => setError(errorMessage(caught)))
+              .catch((caught) => reportError(caught, "reveal-asset"))
           }
         />
       ) : (
@@ -1737,6 +2017,7 @@ function App() {
           <div className="flex h-[calc(100%-58px)] items-center justify-center px-6 text-center">
             <div>
               <p className="text-xs font-medium">No asset selected</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">Select an asset, or use the arrow keys to browse.</p>
             </div>
           </div>
         </aside>
@@ -1744,17 +2025,25 @@ function App() {
 
       {(error || notice) && (
         <div className={cn(
-          "fixed top-3 left-1/2 z-[80] flex max-w-[min(620px,calc(100vw-32px))] -translate-x-1/2 items-center gap-2 rounded-md border bg-popover px-3 py-2 text-xs shadow-lg",
+          "fixed top-3 left-1/2 z-[80] flex max-w-[min(680px,calc(100vw-32px))] -translate-x-1/2 items-start gap-2 rounded-md border bg-popover px-3 py-2 text-xs shadow-lg",
           error ? "border-destructive/40" : "border-primary/35",
-        )} role={error ? "alert" : "status"}>
-          {error ? <AlertCircle className="size-4 shrink-0 text-destructive" /> : <Check className="size-4 shrink-0 text-primary" />}
-          <span className="min-w-0 flex-1 break-words">{error ?? notice}</span>
+        )} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>
+          {error ? <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" /> : <Check className="mt-0.5 size-4 shrink-0 text-primary" />}
+          <div className="min-w-0 flex-1">
+            {errorPresentation ? (
+              <><p className="font-medium">{errorPresentation.title}</p><p className="mt-0.5 text-[11px] text-muted-foreground">{errorPresentation.message}</p></>
+            ) : <span className="break-words">{notice}</span>}
+          </div>
+          {error && errorRecovery && (
+            <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => { setError(null); errorRecovery.run(); }}>
+              {errorRecovery.label}
+            </Button>
+          )}
           {error && (
             <Button type="button" variant="ghost" size="sm" onClick={() => void navigator.clipboard.writeText(error).then(() => {
-              setError(null);
-              setNotice("Error copied");
+              setNotice("Technical details copied");
             }).catch((caught) => reportError(caught, "copy-error"))}>
-              Copy
+              Copy technical details
             </Button>
           )}
           {!error && undoRemoval && (
@@ -1764,6 +2053,11 @@ function App() {
               await refresh();
             }).catch((caught) => reportError(caught, "undo-remove"))}>
               Undo
+            </Button>
+          )}
+          {!error && !undoRemoval && metadataUndo && (
+            <Button type="button" variant="ghost" size="sm" onClick={() => void metadataUndo.run().then(() => { setNotice("Metadata change undone"); setMetadataUndo(null); }).catch((caught) => reportError(caught, "undo-metadata"))}>
+              {metadataUndo.label}
             </Button>
           )}
           <Button
@@ -1783,6 +2077,151 @@ function App() {
           </Button>
         </div>
       )}
+
+      <Dialog open={godotExport !== null} onOpenChange={(open) => {
+        if (!open && !godotExport?.exporting) setGodotExport(null);
+      }}>
+        <DialogContent className="gap-4 sm:max-w-lg">
+          {godotExport?.result ? (
+            <>
+              <DialogHeader className="gap-1">
+                <DialogTitle className="flex items-center gap-2 text-sm"><Check className="size-4 text-primary" /> Export complete</DialogTitle>
+                <DialogDescription className="text-xs">
+                  {godotExport.result.copied.toLocaleString()} files copied to {godotExport.project.name}
+                  {godotExport.result.unchanged > 0 ? ` · ${godotExport.result.unchanged.toLocaleString()} already current` : ""}.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="rounded-md border bg-muted/10 p-3 text-[11px]">
+                <p className="text-muted-foreground">Destination</p>
+                <p className="mt-1 font-mono text-foreground">{godotExport.result.destination}</p>
+                <p className="mt-2 text-muted-foreground">The manifest was updated so later exports can detect unchanged files.</p>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="ghost" size="sm" onClick={() => void navigator.clipboard.writeText(godotExport.preview?.manifest ?? "res://assets/lootbox/lootbox-manifest.json").then(() => setNotice("Manifest path copied")).catch((caught) => reportError(caught, "copy-manifest"))}>
+                  <Copy /> Copy manifest path
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => void api.openAsset(godotExport.project.rootPath).catch((caught) => reportError(caught, "open-project"))} disabled={!godotExport.project.rootPath}>
+                  <FolderOpen /> Open project folder
+                </Button>
+                <Button type="button" size="sm" onClick={() => setGodotExport(null)}>Done</Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogHeader className="gap-1">
+                <DialogTitle className="text-sm">Review Godot export</DialogTitle>
+                <DialogDescription className="text-xs">Nothing is copied until you confirm this plan.</DialogDescription>
+              </DialogHeader>
+              {godotExport?.loading || !godotExport?.preview ? (
+                <div className="space-y-3 py-6 text-center" role="status" aria-live="polite">
+                  <LoaderCircle className="mx-auto size-5 animate-spin text-primary" />
+                  <p className="text-xs text-muted-foreground">Checking related files and destination conflicts…</p>
+                </div>
+              ) : (
+                <>
+                  <dl className="grid grid-cols-[112px_minmax(0,1fr)] gap-y-2 rounded-md border bg-muted/10 p-3 text-[11px]">
+                    <dt className="text-muted-foreground">Project</dt><dd className="min-w-0" title={godotExport.project.rootPath}><span className="block truncate">{godotExport.project.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{godotExport.project.rootPath}</span></dd>
+                    <dt className="text-muted-foreground">Selected</dt><dd>{godotExport.preview.selected.toLocaleString()} assets</dd>
+                    <dt className="text-muted-foreground">Grouped files</dt><dd>{godotExport.preview.grouped.toLocaleString()} related maps or formats</dd>
+                    <dt className="text-muted-foreground">Dependencies</dt><dd>{godotExport.preview.dependencies.toLocaleString()} referenced files</dd>
+                    <dt className="text-muted-foreground">Files to check</dt><dd>{godotExport.preview.totalFiles.toLocaleString()}</dd>
+                    <dt className="text-muted-foreground">Conflicts</dt><dd>{godotExport.preview.conflicts === 0 ? "None" : `${godotExport.preview.conflicts.toLocaleString()} will receive safe Lootbox names`}</dd>
+                    <dt className="text-muted-foreground">Destination</dt><dd className="font-mono">{godotExport.preview.destination}</dd>
+                    <dt className="text-muted-foreground">Manifest</dt><dd className="font-mono break-all">{godotExport.preview.manifest}</dd>
+                  </dl>
+                  {godotExport.preview.conflictFiles.length > 0 && (
+                    <div>
+                      <p className="mb-1.5 text-[11px] font-medium">Safe conflict names</p>
+                      <div className="quiet-scrollbar max-h-20 overflow-y-auto rounded-md border bg-background p-2 font-mono text-[11px] text-muted-foreground">
+                        {godotExport.preview.conflictFiles.map((file) => <p key={file} className="truncate" title={file}>{file}</p>)}
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <p className="mb-1.5 text-[11px] font-medium">Included files</p>
+                    <div className="quiet-scrollbar max-h-28 overflow-y-auto rounded-md border bg-background p-2 font-mono text-[11px] text-muted-foreground">
+                      {godotExport.preview.files.slice(0, 50).map((file) => <p key={file} className="truncate" title={file}>{file}</p>)}
+                      {godotExport.preview.files.length > 50 && <p className="mt-1 text-foreground">+ {godotExport.preview.files.length - 50} more</p>}
+                    </div>
+                  </div>
+                  {godotExport.exporting && (
+                    <div role="status" aria-live="polite" className="space-y-2">
+                      <p className="text-[11px] text-muted-foreground">Copying files and updating the manifest…</p>
+                      <Progress value={null} aria-label="Exporting assets to Godot" />
+                    </div>
+                  )}
+                  {errorContext === "godot-export" && error && (
+                    <p className="text-[11px] text-destructive" role="status">The export can be retried safely; files already copied will be detected as current.</p>
+                  )}
+                </>
+              )}
+              <DialogFooter>
+                <Button type="button" variant="outline" size="sm" onClick={() => setGodotExport(null)} disabled={godotExport?.exporting}>Cancel</Button>
+                <Button type="button" size="sm" onClick={() => void confirmGodotExport()} disabled={!godotExport?.preview || godotExport.exporting}>
+                  {godotExport?.exporting ? <><LoaderCircle className="animate-spin" /> Exporting…</> : `Export ${godotExport?.preview?.totalFiles.toLocaleString() ?? ""} files`}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={reviewSelectionOpen} onOpenChange={(open) => {
+        setReviewSelectionOpen(open);
+        if (open) setReviewSelectionLimit(250);
+      }}>
+        <DialogContent className="gap-4 sm:max-w-lg">
+          <DialogHeader className="gap-1">
+            <DialogTitle className="text-sm">Review selection</DialogTitle>
+            <DialogDescription className="text-xs">{selectionSummary}. Inspector changes apply to every item below.</DialogDescription>
+          </DialogHeader>
+          <div className="quiet-scrollbar max-h-80 overflow-y-auto rounded-md border" role="list" aria-label="Selected assets">
+            {[...selectedIds].slice(0, reviewSelectionLimit).map((id) => {
+              const item = selectedAssetCacheRef.current.get(id) ?? assets.find((asset) => asset.id === id);
+              const path = item?.relativePath ?? selectedPathCacheRef.current.get(id) ?? `Asset ${id}`;
+              const name = item?.name ?? path.split(/[\\/]/).at(-1) ?? `Asset ${id}`;
+              return <div key={id} role="listitem" className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)_28px] items-center gap-3 border-b px-3 py-2 last:border-b-0">
+                <div className="min-w-0"><p className="truncate text-xs font-medium">{name}</p><p className="truncate text-[11px] text-muted-foreground">{item ? `${item.packName} · ${typeLabels[item.assetType]}` : "Result not currently loaded"}</p></div>
+                <p className="self-center truncate font-mono text-[11px] text-muted-foreground" title={path}>{path}</p>
+                <Button type="button" variant="ghost" size="icon-xs" className="rounded-sm text-muted-foreground hover:text-destructive" onClick={() => deselectReviewedAsset(id)} aria-label={`Remove ${name} from selection`} title="Remove from selection"><X /></Button>
+              </div>;
+            })}
+            {selectedIds.size > reviewSelectionLimit && <div className="px-3 py-2"><Button type="button" variant="ghost" size="xs" className="w-full rounded-sm text-[11px] text-muted-foreground" onClick={() => setReviewSelectionLimit((current) => current + 250)}>Show {Math.min(250, selectedIds.size - reviewSelectionLimit).toLocaleString()} more selected assets</Button></div>}
+          </div>
+          <DialogFooter><Button type="button" size="sm" onClick={() => setReviewSelectionOpen(false)}>Done</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={godotPickerOpen} onOpenChange={setGodotPickerOpen}>
+        <DialogContent className="gap-4 sm:max-w-sm">
+          <DialogHeader className="gap-1"><DialogTitle className="text-sm">Choose Godot project</DialogTitle><DialogDescription className="text-xs">Review the destination and included files before export.</DialogDescription></DialogHeader>
+          <div className="space-y-1">
+            {snapshot.projects.filter((project) => project.available).map((project) => (
+              <Button key={project.id} type="button" variant="outline" className="h-auto w-full justify-start rounded-sm px-3 py-2 text-left" onClick={() => { setGodotPickerOpen(false); void addSelectionToGodot(project.id); }}>
+                <Gamepad2 className="shrink-0" /><span className="min-w-0"><span className="block truncate text-xs">{project.name}</span><span className="block truncate text-[11px] font-normal text-muted-foreground">{project.rootPath}</span></span>
+              </Button>
+            ))}
+            <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => void (async () => { const project = await addGodotProject(true); if (project) { setGodotPickerOpen(false); await addSelectionToGodot(project.id, project.name, project.rootPath); } })()}><Plus /> Add Godot project…</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={pendingBulkMutation !== null} onOpenChange={(open) => { if (!open) setPendingBulkMutation(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{pendingBulkMutation?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{pendingBulkMutation?.description}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              const pending = pendingBulkMutation;
+              setPendingBulkMutation(null);
+              if (pending) void pending.run();
+            }}>Apply to {selectedIds.size.toLocaleString()} assets</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={creatingCollection} onOpenChange={(open) => {
         setCreatingCollection(open);
@@ -1940,7 +2379,12 @@ function App() {
           <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 text-xs">
             {[
               ["Ctrl F", "Search"],
+              ["Ctrl Shift F", "Filters"],
               ["Ctrl A", "Select all results"],
+              ["G / L", "Grid / list view"],
+              ["Ctrl E", "Review Godot export"],
+              ["T", "Add a tag to selection"],
+              ["Ctrl Shift C", "New collection from selection"],
               ["↑ ↓ ← →", "Navigate assets"],
               ["Shift + arrows", "Extend selection"],
               ["Ctrl + click", "Toggle selection"],
@@ -2016,7 +2460,7 @@ function App() {
               {diagnostics.length === 0 ? "No errors recorded this session." : diagnostics.slice(-20).reverse().map((entry, index) => <div key={`${entry.timestamp}-${index}`} className="mb-1 break-words">[{entry.context}] {entry.message}</div>)}
             </div>
           </section>
-          {settingsMessage && <p className="text-[11px] text-primary">{settingsMessage}</p>}
+          {settingsMessage && <p className="text-[11px] text-primary" role="status" aria-live="polite">{settingsMessage}</p>}
         </DialogContent>
       </Dialog>
 
@@ -2073,7 +2517,7 @@ function App() {
       </AlertDialog>
 
       {importing && (
-        <div className="fixed right-4 bottom-4 z-50 w-80 rounded-lg border bg-popover/95 p-4 text-xs shadow-xl backdrop-blur-md">
+        <div className="fixed right-4 bottom-4 z-50 w-80 rounded-lg border bg-popover/95 p-4 text-xs shadow-xl backdrop-blur-md" role="status" aria-live="polite" aria-atomic="true" aria-label="Import progress">
           <div className="mb-3 flex items-start gap-2.5">
             <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-primary" />
             <div className="min-w-0 flex-1">
@@ -2105,6 +2549,7 @@ function App() {
                 : null
             }
             className="gap-0"
+            aria-label="Folder import progress"
           />
           {importProgress?.path && (
             <p

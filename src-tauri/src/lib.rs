@@ -4,6 +4,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    cmp::Ordering as CmpOrdering,
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -112,6 +113,7 @@ fn audio_status(playback: &AudioPlayback) -> AudioStatus {
 impl AppState {
     fn connect(&self) -> Result<Connection> {
         let connection = Connection::open(&self.database_path)?;
+        register_collations(&connection)?;
         connection.busy_timeout(Duration::from_secs(15))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -151,6 +153,61 @@ impl AppState {
             }
         }
     }
+}
+
+fn natural_name_cmp(left: &str, right: &str) -> CmpOrdering {
+    let left = left.to_ascii_lowercase();
+    let right = right.to_ascii_lowercase();
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let (mut left_index, mut right_index) = (0, 0);
+
+    while left_index < left.len() && right_index < right.len() {
+        if left[left_index].is_ascii_digit() && right[right_index].is_ascii_digit() {
+            let left_end = (left_index..left.len())
+                .find(|index| !left[*index].is_ascii_digit())
+                .unwrap_or(left.len());
+            let right_end = (right_index..right.len())
+                .find(|index| !right[*index].is_ascii_digit())
+                .unwrap_or(right.len());
+            let left_number = &left[left_index..left_end];
+            let right_number = &right[right_index..right_end];
+            let left_significant = left_number
+                .iter()
+                .position(|byte| *byte != b'0')
+                .map(|index| &left_number[index..])
+                .unwrap_or(&left_number[left_number.len().saturating_sub(1)..]);
+            let right_significant = right_number
+                .iter()
+                .position(|byte| *byte != b'0')
+                .map(|index| &right_number[index..])
+                .unwrap_or(&right_number[right_number.len().saturating_sub(1)..]);
+            let ordering = left_significant
+                .len()
+                .cmp(&right_significant.len())
+                .then_with(|| left_significant.cmp(right_significant))
+                .then_with(|| left_number.len().cmp(&right_number.len()));
+            if ordering != CmpOrdering::Equal {
+                return ordering;
+            }
+            left_index = left_end;
+            right_index = right_end;
+            continue;
+        }
+
+        let ordering = left[left_index].cmp(&right[right_index]);
+        if ordering != CmpOrdering::Equal {
+            return ordering;
+        }
+        left_index += 1;
+        right_index += 1;
+    }
+    left.len().cmp(&right.len())
+}
+
+fn register_collations(connection: &Connection) -> Result<()> {
+    connection.create_collation("LOOTBOX_NATURAL", natural_name_cmp)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -245,6 +302,21 @@ struct GodotExportResult {
     copied: usize,
     unchanged: usize,
     destination: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GodotExportPreview {
+    selected: usize,
+    related: usize,
+    grouped: usize,
+    dependencies: usize,
+    total_files: usize,
+    conflicts: usize,
+    conflict_files: Vec<String>,
+    destination: String,
+    manifest: String,
+    files: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -361,6 +433,16 @@ struct AssetSelection {
     absolute_path: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClassificationOverrideSnapshot {
+    asset_id: i64,
+    asset_type: Option<String>,
+    map_role: Option<String>,
+    group_key: Option<String>,
+    existed: bool,
+}
+
 const SCHEMA_VERSION: i64 = 5;
 const IMAGE_THUMBNAIL_VERSION: i64 = 2;
 const MODEL_THUMBNAIL_VERSION: i64 = 3;
@@ -389,6 +471,7 @@ fn add_column_if_missing(
 }
 
 fn initialize_database(connection: &Connection) -> Result<()> {
+    register_collations(connection)?;
     let transaction = connection.unchecked_transaction()?;
     transaction.execute_batch(
         r#"
@@ -2523,15 +2606,15 @@ fn asset_query_order(request: &AssetQuery) -> String {
     let direction = if descending { "DESC" } else { "ASC" };
     match request.sort.as_deref() {
         Some("newest") => format!(
-            "a.modified_at {direction}, a.name COLLATE NOCASE {direction}, a.id {direction}"
+            "a.modified_at {direction}, a.name COLLATE LOOTBOX_NATURAL {direction}, a.id {direction}"
         ),
         Some("largest") => format!(
-            "a.size_bytes {direction}, a.name COLLATE NOCASE {direction}, a.id {direction}"
+            "a.size_bytes {direction}, a.name COLLATE LOOTBOX_NATURAL {direction}, a.id {direction}"
         ),
         Some("type") => format!(
-            "a.asset_type COLLATE NOCASE {direction}, a.name COLLATE NOCASE {direction}, a.id {direction}"
+            "a.asset_type COLLATE NOCASE {direction}, a.name COLLATE LOOTBOX_NATURAL {direction}, a.id {direction}"
         ),
-        _ => format!("a.name COLLATE NOCASE {direction}, a.id {direction}"),
+        _ => format!("a.name COLLATE LOOTBOX_NATURAL {direction}, a.id {direction}"),
     }
 }
 
@@ -2734,14 +2817,14 @@ fn query_assets_from_connection(request: AssetQuery, connection: &Connection) ->
 
 #[tauri::command]
 fn add_tag(asset_id: i64, name: String, state: State<'_, AppState>) -> Result<()> {
-    add_tags(vec![asset_id], name, state)
+    add_tags(vec![asset_id], name, state).map(|_| ())
 }
 
 #[tauri::command]
-fn add_tags(asset_ids: Vec<i64>, name: String, state: State<'_, AppState>) -> Result<()> {
+fn add_tags(asset_ids: Vec<i64>, name: String, state: State<'_, AppState>) -> Result<Vec<i64>> {
     let name = name.trim();
     if name.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let _guard = state
         .write_queue
@@ -2758,39 +2841,51 @@ fn add_tags(asset_ids: Vec<i64>, name: String, state: State<'_, AppState>) -> Re
         params![name],
         |row| row.get(0),
     )?;
+    let mut changed = Vec::new();
     for asset_id in asset_ids {
-        transaction.execute(
+        if transaction.execute(
             "INSERT OR IGNORE INTO asset_tags(asset_id, tag_id) VALUES (?1, ?2)",
             params![asset_id, tag_id],
-        )?;
+        )? > 0
+        {
+            changed.push(asset_id);
+        }
     }
     transaction.commit()?;
-    rebuild_search_index(&connection)
+    rebuild_search_index(&connection)?;
+    Ok(changed)
 }
 
 #[tauri::command]
 fn remove_tag(asset_id: i64, name: String, state: State<'_, AppState>) -> Result<()> {
-    remove_tags(vec![asset_id], name, state)
+    remove_tags(vec![asset_id], name, state).map(|_| ())
 }
 
 #[tauri::command]
-fn remove_tags(asset_ids: Vec<i64>, name: String, state: State<'_, AppState>) -> Result<()> {
+fn remove_tags(asset_ids: Vec<i64>, name: String, state: State<'_, AppState>) -> Result<Vec<i64>> {
     let _guard = state
         .write_queue
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let connection = state.connect()?;
+    let mut connection = state.connect()?;
+    let transaction = connection.transaction()?;
+    let mut changed = Vec::new();
     for asset_id in asset_ids {
-        connection.execute(
+        if transaction.execute(
             r#"
             DELETE FROM asset_tags
             WHERE asset_id = ?1
               AND tag_id = (SELECT id FROM tags WHERE name = ?2 COLLATE NOCASE)
             "#,
             params![asset_id, name],
-        )?;
+        )? > 0
+        {
+            changed.push(asset_id);
+        }
     }
-    rebuild_search_index(&connection)
+    transaction.commit()?;
+    rebuild_search_index(&connection)?;
+    Ok(changed)
 }
 
 #[tauri::command]
@@ -2830,7 +2925,7 @@ fn set_collection_membership(
     included: bool,
     state: State<'_, AppState>,
 ) -> Result<()> {
-    set_collection_memberships(vec![asset_id], collection_id, included, state)
+    set_collection_memberships(vec![asset_id], collection_id, included, state).map(|_| ())
 }
 
 #[tauri::command]
@@ -2839,26 +2934,32 @@ fn set_collection_memberships(
     collection_id: i64,
     included: bool,
     state: State<'_, AppState>,
-) -> Result<()> {
+) -> Result<Vec<i64>> {
     let _guard = state
         .write_queue
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let connection = state.connect()?;
+    let mut connection = state.connect()?;
+    let transaction = connection.transaction()?;
+    let mut changed = Vec::new();
     for asset_id in asset_ids {
-        if included {
-            connection.execute(
+        let affected = if included {
+            transaction.execute(
                 "INSERT OR IGNORE INTO collection_assets(collection_id, asset_id) VALUES (?1, ?2)",
                 params![collection_id, asset_id],
-            )?;
+            )?
         } else {
-            connection.execute(
+            transaction.execute(
                 "DELETE FROM collection_assets WHERE collection_id = ?1 AND asset_id = ?2",
                 params![collection_id, asset_id],
-            )?;
+            )?
+        };
+        if affected > 0 {
+            changed.push(asset_id);
         }
     }
-    Ok(())
+    transaction.commit()?;
+    Ok(changed)
 }
 
 #[tauri::command]
@@ -3008,18 +3109,7 @@ fn collision_export_path(path: &Path, asset_id: i64, attempt: usize) -> PathBuf 
     path.with_file_name(name)
 }
 
-fn export_assets_to_godot_from_connection(
-    connection: &mut Connection,
-    project_id: i64,
-    asset_ids: &[i64],
-) -> Result<GodotExportResult> {
-    let project = project_summary(connection, project_id)?;
-    let root = PathBuf::from(&project.root_path);
-    if !root.join("project.godot").is_file() {
-        return Err(LootboxError::InvalidGodotProject(
-            "project.godot is missing".into(),
-        ));
-    }
+fn collect_godot_export_ids(connection: &Connection, asset_ids: &[i64]) -> Result<HashSet<i64>> {
     let mut physical_ids = HashSet::new();
     for asset_id in asset_ids {
         let asset: Option<(i64, Option<String>)> = connection
@@ -3052,6 +3142,147 @@ fn export_assets_to_godot_from_connection(
                 .collect::<std::result::Result<Vec<_>, _>>()?,
         );
     }
+    Ok(physical_ids)
+}
+
+fn preview_assets_to_godot_from_connection(
+    connection: &Connection,
+    project_id: i64,
+    asset_ids: &[i64],
+) -> Result<GodotExportPreview> {
+    let project = project_summary(connection, project_id)?;
+    let root = PathBuf::from(&project.root_path);
+    if !root.join("project.godot").is_file() {
+        return Err(LootboxError::InvalidGodotProject(
+            "project.godot is missing".into(),
+        ));
+    }
+    let physical_ids = collect_godot_export_ids(connection, asset_ids)?;
+    let requested_ids = asset_ids.iter().copied().collect::<HashSet<_>>();
+    let mut grouped_ids = HashSet::new();
+    let mut dependency_ids = HashSet::new();
+    for asset_id in asset_ids {
+        let asset: Option<(i64, Option<String>)> = connection
+            .query_row(
+                "SELECT pack_id, group_key FROM assets WHERE id = ?1 AND missing = 0",
+                params![asset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((pack_id, group_key)) = asset else {
+            continue;
+        };
+        if let Some(group_key) = group_key {
+            let mut statement = connection.prepare(
+                "SELECT id FROM assets WHERE pack_id = ?1 AND group_key = ?2 AND missing = 0",
+            )?;
+            grouped_ids.extend(
+                statement
+                    .query_map(params![pack_id, group_key], |row| row.get::<_, i64>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            );
+        }
+        let mut statement = connection.prepare(
+            "SELECT dependency_asset_id FROM asset_dependencies WHERE owner_asset_id = ?1",
+        )?;
+        dependency_ids.extend(
+            statement
+                .query_map(params![asset_id], |row| row.get::<_, i64>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        );
+    }
+    grouped_ids.retain(|id| !requested_ids.contains(id));
+    dependency_ids.retain(|id| !requested_ids.contains(id) && !grouped_ids.contains(id));
+    let export_root = root.join("assets").join("lootbox");
+    let mut files = Vec::new();
+    let mut conflicts = 0;
+    let mut conflict_files = Vec::new();
+    let mut ids = physical_ids.iter().copied().collect::<Vec<_>>();
+    ids.sort_unstable();
+    for asset_id in ids {
+        let (pack_id, pack_name, relative_path, source): (i64, String, String, String) = connection
+            .query_row(
+                r#"
+                SELECT asset.pack_id, pack.name, asset.relative_path, asset.absolute_path
+                FROM assets asset JOIN packs pack ON pack.id = asset.pack_id
+                WHERE asset.id = ?1 AND asset.missing = 0
+                "#,
+                params![asset_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+        let source = PathBuf::from(source);
+        if !source.is_file() {
+            continue;
+        }
+        let pack_component = format!(
+            "{}-{pack_id}",
+            safe_project_component(&pack_name).to_ascii_lowercase()
+        );
+        let relative = safe_export_relative_path(&relative_path)?;
+        let destination = export_root.join(&pack_component).join(&relative);
+        let tracked_path: Option<String> = connection
+            .query_row(
+                "SELECT exported_path FROM project_exports WHERE project_id = ?1 AND asset_id = ?2",
+                params![project_id, asset_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if destination.is_file()
+            && tracked_path.as_deref() != Some(path_string(&destination).as_str())
+            && hash_file(&destination).ok() != hash_file(&source).ok()
+        {
+            conflicts += 1;
+            let source_hash = hash_file(&source).ok();
+            let renamed = (0..10_000)
+                .map(|attempt| collision_export_path(&destination, asset_id, attempt))
+                .find(|candidate| {
+                    !candidate.exists()
+                        || tracked_path.as_deref() == Some(path_string(candidate).as_str())
+                        || hash_file(candidate).ok() == source_hash
+                });
+            if let Some(renamed) = renamed {
+                let original_name = destination
+                    .file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_default();
+                let renamed_name = renamed
+                    .file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_default();
+                conflict_files.push(format!("{original_name} → {renamed_name}"));
+            }
+        }
+        files.push(format!("{pack_component}/{}", relative.to_string_lossy()));
+    }
+    files.sort();
+    let selected = requested_ids.intersection(&physical_ids).count();
+    Ok(GodotExportPreview {
+        selected,
+        related: physical_ids.len().saturating_sub(selected),
+        grouped: grouped_ids.len(),
+        dependencies: dependency_ids.len(),
+        total_files: files.len(),
+        conflicts,
+        conflict_files,
+        destination: "res://assets/lootbox".into(),
+        manifest: "res://assets/lootbox/lootbox-manifest.json".into(),
+        files,
+    })
+}
+
+fn export_assets_to_godot_from_connection(
+    connection: &mut Connection,
+    project_id: i64,
+    asset_ids: &[i64],
+) -> Result<GodotExportResult> {
+    let project = project_summary(connection, project_id)?;
+    let root = PathBuf::from(&project.root_path);
+    if !root.join("project.godot").is_file() {
+        return Err(LootboxError::InvalidGodotProject(
+            "project.godot is missing".into(),
+        ));
+    }
+    let physical_ids = collect_godot_export_ids(connection, asset_ids)?;
 
     let export_root = root.join("assets").join("lootbox");
     fs::create_dir_all(&export_root)?;
@@ -3179,6 +3410,21 @@ fn export_assets_to_godot_from_connection(
 }
 
 #[tauri::command]
+async fn preview_assets_to_godot(
+    project_id: i64,
+    asset_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<GodotExportPreview> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = state.connect()?;
+        preview_assets_to_godot_from_connection(&connection, project_id, &asset_ids)
+    })
+    .await
+    .map_err(|_| LootboxError::ImportWorker)?
+}
+
+#[tauri::command]
 async fn export_assets_to_godot(
     project_id: i64,
     asset_ids: Vec<i64>,
@@ -3300,13 +3546,13 @@ fn set_classification_override(
     map_role: Option<String>,
     group_action: Option<String>,
     state: State<'_, AppState>,
-) -> Result<()> {
+) -> Result<Vec<ClassificationOverrideSnapshot>> {
     const VALID_TYPES: &[&str] = &[
         "image", "texture", "audio", "model", "video", "font", "shader", "material", "archive",
         "other",
     ];
     if asset_ids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     if asset_type
         .as_deref()
@@ -3322,6 +3568,29 @@ fn set_classification_override(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut connection = state.connect()?;
     let transaction = connection.transaction()?;
+    let snapshots = asset_ids
+        .iter()
+        .map(|asset_id| {
+            let previous = transaction
+                .query_row(
+                    "SELECT asset_type, map_role, group_key FROM classification_overrides WHERE asset_id = ?1",
+                    params![asset_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let (asset_type, map_role, group_key, existed) = match previous {
+                Some((asset_type, map_role, group_key)) => (asset_type, map_role, group_key, true),
+                None => (None, None, None, false),
+            };
+            Ok(ClassificationOverrideSnapshot {
+                asset_id: *asset_id,
+                asset_type,
+                map_role,
+                group_key,
+                existed,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let pack_ids = asset_ids
         .iter()
         .map(|asset_id| {
@@ -3373,13 +3642,17 @@ fn set_classification_override(
         recompute_asset_dependencies(&transaction, Some(pack_id))?;
     }
     transaction.commit()?;
-    rebuild_search_index(&connection)
+    rebuild_search_index(&connection)?;
+    Ok(snapshots)
 }
 
 #[tauri::command]
-fn reset_classification_override(asset_ids: Vec<i64>, state: State<'_, AppState>) -> Result<()> {
+fn reset_classification_override(
+    asset_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ClassificationOverrideSnapshot>> {
     if asset_ids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let _guard = state
         .write_queue
@@ -3387,6 +3660,29 @@ fn reset_classification_override(asset_ids: Vec<i64>, state: State<'_, AppState>
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut connection = state.connect()?;
     let transaction = connection.transaction()?;
+    let snapshots = asset_ids
+        .iter()
+        .map(|asset_id| {
+            let previous = transaction
+                .query_row(
+                    "SELECT asset_type, map_role, group_key FROM classification_overrides WHERE asset_id = ?1",
+                    params![asset_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let (asset_type, map_role, group_key, existed) = match previous {
+                Some((asset_type, map_role, group_key)) => (asset_type, map_role, group_key, true),
+                None => (None, None, None, false),
+            };
+            Ok(ClassificationOverrideSnapshot {
+                asset_id: *asset_id,
+                asset_type,
+                map_role,
+                group_key,
+                existed,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let pack_ids = asset_ids
         .iter()
         .filter_map(|asset_id| {
@@ -3404,6 +3700,69 @@ fn reset_classification_override(asset_ids: Vec<i64>, state: State<'_, AppState>
             "DELETE FROM classification_overrides WHERE asset_id = ?1",
             params![asset_id],
         )?;
+    }
+    for pack_id in pack_ids {
+        recompute_texture_groups(&transaction, Some(pack_id))?;
+        apply_classification_overrides(&transaction, Some(pack_id))?;
+        recompute_primary_assets(&transaction, Some(pack_id))?;
+        recompute_asset_dependencies(&transaction, Some(pack_id))?;
+    }
+    transaction.commit()?;
+    rebuild_search_index(&connection)?;
+    Ok(snapshots)
+}
+
+#[tauri::command]
+fn restore_classification_overrides(
+    snapshots: Vec<ClassificationOverrideSnapshot>,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    if snapshots.is_empty() {
+        return Ok(());
+    }
+    let _guard = state
+        .write_queue
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut connection = state.connect()?;
+    let transaction = connection.transaction()?;
+    let pack_ids = snapshots
+        .iter()
+        .filter_map(|snapshot| {
+            transaction
+                .query_row(
+                    "SELECT pack_id FROM assets WHERE id = ?1",
+                    params![snapshot.asset_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .ok()
+        })
+        .collect::<HashSet<_>>();
+    for snapshot in snapshots {
+        if snapshot.existed {
+            transaction.execute(
+                r#"
+                INSERT INTO classification_overrides(asset_id, asset_type, map_role, group_key)
+                VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(asset_id) DO UPDATE SET
+                    asset_type = excluded.asset_type,
+                    map_role = excluded.map_role,
+                    group_key = excluded.group_key,
+                    updated_at = CURRENT_TIMESTAMP
+                "#,
+                params![
+                    snapshot.asset_id,
+                    snapshot.asset_type,
+                    snapshot.map_role,
+                    snapshot.group_key
+                ],
+            )?;
+        } else {
+            transaction.execute(
+                "DELETE FROM classification_overrides WHERE asset_id = ?1",
+                params![snapshot.asset_id],
+            )?;
+        }
     }
     for pack_id in pack_ids {
         recompute_texture_groups(&transaction, Some(pack_id))?;
@@ -3823,6 +4182,7 @@ pub fn run() {
             delete_collection,
             add_godot_project,
             remove_project,
+            preview_assets_to_godot,
             export_assets_to_godot,
             hash_library,
             remove_pack,
@@ -3830,6 +4190,7 @@ pub fn run() {
             set_assets_excluded,
             set_classification_override,
             reset_classification_override,
+            restore_classification_overrides,
             purge_missing_assets,
             relocate_pack,
             get_cache_status,
@@ -3869,6 +4230,42 @@ fn configure_linux_webview() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn naturally_sorts_numeric_runs_in_asset_names() {
+        let connection = Connection::open_in_memory().unwrap();
+        register_collations(&connection).unwrap();
+        connection
+            .execute("CREATE TABLE names (name TEXT NOT NULL)", [])
+            .unwrap();
+        for name in [
+            "ambience_d19_loop",
+            "ambience_d2_loop",
+            "ambience_d10_loop",
+            "ambience_d1_loop",
+        ] {
+            connection
+                .execute("INSERT INTO names(name) VALUES (?1)", [name])
+                .unwrap();
+        }
+        let mut statement = connection
+            .prepare("SELECT name FROM names ORDER BY name COLLATE LOOTBOX_NATURAL ASC")
+            .unwrap();
+        let names = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            names,
+            [
+                "ambience_d1_loop",
+                "ambience_d2_loop",
+                "ambience_d10_loop",
+                "ambience_d19_loop"
+            ]
+        );
+    }
 
     #[test]
     fn classifies_common_game_asset_formats() {
@@ -4618,6 +5015,17 @@ mod tests {
         let exported_root = project.join("assets/lootbox/surface-pack-1/Materials/Brick");
         fs::create_dir_all(&exported_root).unwrap();
         fs::write(exported_root.join("brick_color.png"), b"project-owned file").unwrap();
+
+        let preview =
+            preview_assets_to_godot_from_connection(&connection, project_id, &[asset_id]).unwrap();
+        assert_eq!(preview.selected, 1);
+        assert_eq!(preview.related, 1);
+        assert_eq!(preview.grouped, 1);
+        assert_eq!(preview.dependencies, 0);
+        assert_eq!(preview.total_files, 2);
+        assert_eq!(preview.conflicts, 1);
+        assert_eq!(preview.conflict_files.len(), 1);
+        assert_eq!(preview.destination, "res://assets/lootbox");
 
         let first =
             export_assets_to_godot_from_connection(&mut connection, project_id, &[asset_id])

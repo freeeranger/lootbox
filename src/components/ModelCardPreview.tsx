@@ -12,8 +12,8 @@ const completedPreviews = new Set<string>();
 const savedThumbnails = new Set<number>();
 const persistedThumbnails = new Map<number, string>();
 const previewCacheLimit = 48;
+const previewTimeoutMs = 20_000;
 let renderQueue: Promise<void> = Promise.resolve();
-let renderer: THREE.WebGLRenderer | null = null;
 
 export function resetModelPreviewCache() {
   previews.clear();
@@ -23,7 +23,7 @@ export function resetModelPreviewCache() {
 }
 
 async function renderPreview(path: string) {
-  renderer ??= new THREE.WebGLRenderer({
+  const renderer = new THREE.WebGLRenderer({
     antialias: true,
     alpha: false,
     preserveDrawingBuffer: true,
@@ -44,24 +44,50 @@ async function renderPreview(path: string) {
   rim.position.set(-4, 2, -4);
   scene.add(rim);
 
-  const gltf = await new GLTFLoader().loadAsync(convertFileSrc(path));
-  const model = gltf.scene;
-  prepareModelForPreview(model);
-  scene.add(model);
-  const box = new THREE.Box3().setFromObject(model);
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const radius = Math.max(size.x, size.y, size.z) || 1;
-  model.position.sub(center);
+  let model: THREE.Object3D | null = null;
+  try {
+    const gltf = await new GLTFLoader().loadAsync(convertFileSrc(path));
+    model = gltf.scene;
+    prepareModelForPreview(model);
+    scene.add(model);
+    let renderableMeshes = 0;
+    model.traverse((child) => {
+      if (child instanceof THREE.Mesh && child.visible && child.geometry.getAttribute("position")?.count > 0) renderableMeshes += 1;
+    });
+    if (renderableMeshes === 0) throw new Error("The model contains no renderable geometry");
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    if (box.isEmpty() || ![size.x, size.y, size.z, center.x, center.y, center.z].every(Number.isFinite)) {
+      throw new Error("The model has invalid preview bounds");
+    }
+    const radius = Math.max(size.x, size.y, size.z) || 1;
+    model.position.sub(center);
 
-  const near = Math.max(radius / 100, 0.001);
-  const camera = new THREE.PerspectiveCamera(36, 4 / 3, near, Math.max(radius * 20, near + 1));
-  camera.position.set(radius * 1.55, radius * 1.1, radius * 2.05);
-  camera.lookAt(0, 0, 0);
-  renderer.render(scene, camera);
-  const source = renderer.domElement.toDataURL("image/png");
-  disposeModel(model);
-  return source;
+    const near = Math.max(radius / 100, 0.001);
+    const camera = new THREE.PerspectiveCamera(36, 4 / 3, near, Math.max(radius * 20, near + 1));
+    camera.position.set(radius * 1.55, radius * 1.1, radius * 2.05);
+    camera.lookAt(0, 0, 0);
+    renderer.render(scene, camera);
+    const source = renderer.domElement.toDataURL("image/png");
+    if (!source.startsWith("data:image/png;base64,") || source.length < 256) {
+      throw new Error("The model renderer returned an empty thumbnail");
+    }
+    return source;
+  } finally {
+    if (model) disposeModel(model);
+    renderer.dispose();
+  }
+}
+
+function renderPreviewWithTimeout(path: string) {
+  return new Promise<string>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error("Model thumbnail generation timed out")), previewTimeoutMs);
+    void renderPreview(path).then(
+      (source) => { window.clearTimeout(timer); resolve(source); },
+      (error) => { window.clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 function getPreview(path: string) {
@@ -82,7 +108,7 @@ function getPreview(path: string) {
   renderQueue = renderQueue
     .then(async () => {
       try {
-        resolvePreview(await renderPreview(path));
+        resolvePreview(await renderPreviewWithTimeout(path));
         completedPreviews.add(path);
         const completed = previews.get(path);
         if (completed) {
@@ -147,6 +173,7 @@ export function ModelCardPreview({ asset, iconSize, onError }: { asset: Asset; i
     const host = hostRef.current;
     if (!host) return;
     let active = true;
+    setSource(null);
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return;
@@ -170,7 +197,12 @@ export function ModelCardPreview({ asset, iconSize, onError }: { asset: Asset; i
   return (
     <span ref={hostRef} className="grid size-full place-items-center text-muted-foreground/65">
       {source ? (
-        <img src={source} alt="" className="size-full object-contain" />
+        <img src={source} alt="" className="size-full object-contain" onError={() => {
+          persistedThumbnails.delete(asset.id);
+          savedThumbnails.delete(asset.id);
+          setSource(null);
+          onError?.(new Error(`Generated model thumbnail could not be displayed for ${asset.relativePath}`));
+        }} />
       ) : (
         <AssetTypeIcon type="model" size={iconSize} />
       )}

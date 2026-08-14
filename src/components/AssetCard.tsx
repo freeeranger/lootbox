@@ -44,6 +44,11 @@ interface Props {
   dragPaths: string[];
   onCopyPath: (path: string) => void;
   onError: (error: unknown) => void;
+  onPreviewError: (asset: Asset, error: unknown) => void;
+  optionId: string;
+  optionIndex: number;
+  optionCount: number;
+  tabIndex: number;
 }
 
 function AudioCardControl({
@@ -67,7 +72,7 @@ function AudioCardControl({
       type="button"
       className={cn(
         "absolute z-10 grid place-items-center rounded-full border border-border/70 bg-background/85 text-foreground shadow-sm backdrop-blur-sm hover:bg-accent",
-        view === "grid" ? "top-2 left-2 size-7" : "top-2 left-2 size-7",
+        view === "grid" ? "top-2 left-2 size-7" : "top-1/2 left-[25px] size-7 -translate-x-1/2 -translate-y-1/2",
       )}
       aria-label={playing ? `Pause ${asset.name}` : `Play ${asset.name}`}
       disabled={busy}
@@ -84,7 +89,7 @@ function AudioCardControl({
       ) : playing ? (
         <Pause className="size-3" />
       ) : (
-        <Play className="size-3" />
+        <Play className="size-3 translate-x-px" />
       )}
     </button>
   );
@@ -105,12 +110,21 @@ function AssetCardComponent({
   dragPaths,
   onCopyPath,
   onError,
+  onPreviewError,
+  optionId,
+  optionIndex,
+  optionCount,
+  tabIndex,
 }: Props) {
+  const [failedImageSource, setFailedImageSource] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState(false);
+  const [previewAttempt, setPreviewAttempt] = useState(0);
   const imageSource =
     asset.thumbnailPath ??
     (["image", "texture"].includes(asset.assetType) && browserImages.has(asset.extension)
       ? asset.absolutePath
       : null);
+  const usableImageSource = imageSource === failedImageSource ? null : imageSource;
 
   function startDrag(event: React.DragEvent<HTMLButtonElement>) {
     const paths = dragPaths.length > 0 ? dragPaths : [asset.absolutePath];
@@ -136,6 +150,12 @@ function AssetCardComponent({
         <div className="relative min-w-0" data-asset-card>
           <button
             type="button"
+            id={optionId}
+            role="option"
+            aria-selected={selected}
+            aria-posinset={optionIndex + 1}
+            aria-setsize={optionCount}
+            tabIndex={tabIndex}
             className={cn(
               "group block w-full min-w-0 rounded-md text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60",
               view === "list" &&
@@ -149,7 +169,6 @@ function AssetCardComponent({
             onDoubleClick={() => onOpen(asset)}
             onDragStart={startDrag}
             draggable
-            aria-pressed={selected}
             title={asset.relativePath}
           >
       <span
@@ -158,16 +177,23 @@ function AssetCardComponent({
           view === "grid" ? "aspect-[4/3] rounded-md" : "size-[34px] rounded-md",
           selected && view === "grid" && "border-primary/60",
           !selected && "group-hover:border-foreground/20",
-          imageSource && ["image", "texture"].includes(asset.assetType) && "checkerboard",
+          usableImageSource && ["image", "texture"].includes(asset.assetType) && "checkerboard",
         )}
       >
-        {imageSource ? (
+        {usableImageSource ? (
           <img
-            src={convertFileSrc(imageSource)}
+            src={convertFileSrc(usableImageSource)}
             alt=""
             loading="lazy"
             decoding="async"
             className={cn("size-full object-contain", view === "grid" && "p-1")}
+            onError={() => {
+              setFailedImageSource(usableImageSource);
+              if (asset.assetType !== "model") {
+                setPreviewError(true);
+                onPreviewError(asset, new Error(`Preview unavailable for ${asset.relativePath}`));
+              }
+            }}
           />
         ) : asset.assetType === "model" && ["glb", "gltf"].includes(asset.extension) ? (
           <Suspense
@@ -177,7 +203,15 @@ function AssetCardComponent({
               </span>
             }
           >
-            <ModelCardPreview asset={asset} iconSize={view === "grid" ? 30 : 15} onError={onError} />
+            <ModelCardPreview
+              key={`${asset.id}:${previewAttempt}`}
+              asset={failedImageSource ? { ...asset, thumbnailPath: null } : asset}
+              iconSize={view === "grid" ? 30 : 15}
+              onError={(error) => {
+                setPreviewError(true);
+                onPreviewError(asset, error);
+              }}
+            />
           </Suspense>
         ) : (
           <span className="grid size-full place-items-center text-muted-foreground/65">
@@ -223,6 +257,25 @@ function AssetCardComponent({
           </button>
           {asset.assetType === "audio" && (
             <AudioCardControl asset={asset} view={view} onError={onError} />
+          )}
+          {previewError && (
+            <button
+              type="button"
+              className={cn(
+                "absolute z-10 grid place-items-center rounded-sm border border-border/70 bg-background/90 text-muted-foreground shadow-sm hover:text-foreground",
+                view === "grid" ? "right-2 bottom-10 size-6" : "top-1/2 left-[25px] size-6 -translate-x-1/2 -translate-y-1/2",
+              )}
+              aria-label={`Retry preview for ${asset.name}`}
+              title="Preview unavailable · retry"
+              onClick={(event) => {
+                event.stopPropagation();
+                setPreviewError(false);
+                setFailedImageSource(null);
+                setPreviewAttempt((attempt) => attempt + 1);
+              }}
+            >
+              <RotateCcw className="size-3" />
+            </button>
           )}
         </div>
       </ContextMenuTrigger>

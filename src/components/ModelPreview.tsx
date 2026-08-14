@@ -3,6 +3,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RotateCcw } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { ModelStats } from "../types";
 import { disposeModel, prepareModelForPreview } from "./modelPreviewUtils";
 
@@ -15,6 +17,7 @@ interface Props {
 export function ModelPreview({ path, onStats, onError }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const onStatsRef = useRef(onStats);
   const onErrorRef = useRef(onError);
   onStatsRef.current = onStats;
@@ -186,7 +189,7 @@ export function ModelPreview({ path, onStats, onError }: Props) {
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [path]);
+  }, [attempt, path]);
 
   return (
     <div
@@ -194,8 +197,13 @@ export function ModelPreview({ path, onStats, onError }: Props) {
       ref={hostRef}
     >
       {error && (
-        <div className="absolute inset-0 z-10 grid place-items-center bg-background px-6 text-center text-xs text-muted-foreground">
-          Preview unavailable. See diagnostics for details.
+        <div className="absolute inset-0 z-10 grid place-items-center bg-background px-6 text-center text-xs text-muted-foreground" role="status">
+          <div>
+            <p>Preview unavailable for this model.</p>
+            <Button type="button" variant="outline" size="xs" className="mt-3 rounded-sm" onClick={() => setAttempt((current) => current + 1)}>
+              <RotateCcw /> Retry preview
+            </Button>
+          </div>
         </div>
       )}
     </div>

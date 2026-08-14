@@ -7,6 +7,7 @@ import type {
   AudioStatus,
   CollectionSummary,
   CacheStatus,
+  ClassificationOverrideSnapshot,
   DiagnosticEntry,
   FilterOptions,
   ImportProgress,
@@ -14,6 +15,7 @@ import type {
   PackSummary,
   ProjectSummary,
   GodotExportResult,
+  GodotExportPreview,
 } from "./types";
 
 export const api = {
@@ -39,11 +41,11 @@ export const api = {
   addTag: (assetId: number, name: string) =>
     invoke<void>("add_tag", { assetId, name }),
   addTags: (assetIds: number[], name: string) =>
-    invoke<void>("add_tags", { assetIds, name }),
+    invoke<number[]>("add_tags", { assetIds, name }),
   removeTag: (assetId: number, name: string) =>
     invoke<void>("remove_tag", { assetId, name }),
   removeTags: (assetIds: number[], name: string) =>
-    invoke<void>("remove_tags", { assetIds, name }),
+    invoke<number[]>("remove_tags", { assetIds, name }),
   createCollection: (name: string) =>
     invoke<CollectionSummary>("create_collection", { name }),
   setCollectionMembership: (
@@ -60,20 +62,22 @@ export const api = {
     assetIds: number[],
     collectionId: number,
     included: boolean,
-  ) => invoke<void>("set_collection_memberships", { assetIds, collectionId, included }),
+  ) => invoke<number[]>("set_collection_memberships", { assetIds, collectionId, included }),
   setClassificationOverride: (
     assetIds: number[],
     assetType?: string,
     mapRole?: string,
     groupAction?: "merge" | "split",
-  ) => invoke<void>("set_classification_override", {
+  ) => invoke<ClassificationOverrideSnapshot[]>("set_classification_override", {
     assetIds,
     assetType: assetType || null,
     mapRole: mapRole || null,
     groupAction: groupAction || null,
   }),
   resetClassificationOverride: (assetIds: number[]) =>
-    invoke<void>("reset_classification_override", { assetIds }),
+    invoke<ClassificationOverrideSnapshot[]>("reset_classification_override", { assetIds }),
+  restoreClassificationOverrides: (snapshots: ClassificationOverrideSnapshot[]) =>
+    invoke<void>("restore_classification_overrides", { snapshots }),
   purgeMissingAssets: (packId: number) =>
     invoke<void>("purge_missing_assets", { packId }),
   filterOptions: () => invoke<FilterOptions>("get_filter_options"),
@@ -93,6 +97,8 @@ export const api = {
     invoke<ProjectSummary>("add_godot_project", { path }),
   removeProject: (projectId: number) =>
     invoke<void>("remove_project", { projectId }),
+  previewAssetsToGodot: (projectId: number, assetIds: number[]) =>
+    invoke<GodotExportPreview>("preview_assets_to_godot", { projectId, assetIds }),
   exportAssetsToGodot: (projectId: number, assetIds: number[]) =>
     invoke<GodotExportResult>("export_assets_to_godot", { projectId, assetIds }),
   hashLibrary: () => invoke<number>("hash_library"),

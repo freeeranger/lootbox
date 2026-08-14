@@ -106,20 +106,22 @@ interface NavItemProps {
   active: boolean;
   icon: typeof Library;
   label: string;
+  description?: string;
   count: number;
   title?: string;
   onClick: () => void;
   warning?: boolean;
 }
 
-function NavItem({ active, icon: Icon, label, count, title, onClick, warning }: NavItemProps) {
+function NavItem({ active, icon: Icon, label, description, count, title, onClick, warning }: NavItemProps) {
   return (
     <Button
       type="button"
       variant="ghost"
       size="sm"
       className={cn(
-        "relative h-8 w-full justify-start rounded-md px-2.5 text-xs font-normal text-muted-foreground",
+        "relative w-full justify-start rounded-md px-2.5 text-xs font-normal text-muted-foreground",
+        description ? "h-auto min-h-10 py-1.5" : "h-8",
         active && "bg-sidebar-accent text-sidebar-accent-foreground",
       )}
       onClick={onClick}
@@ -127,7 +129,10 @@ function NavItem({ active, icon: Icon, label, count, title, onClick, warning }: 
       aria-current={active ? "page" : undefined}
     >
       <Icon className={cn("size-3.5", warning && "text-destructive")} />
-      <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+      <span className="min-w-0 flex-1 text-left">
+        <span className="block truncate">{label}</span>
+        {description && <span className="block truncate font-mono text-[11px] leading-3 text-muted-foreground/70">{description}</span>}
+      </span>
       <span className="font-mono text-[11px] text-muted-foreground/70">
         {count > 9999 ? "9k+" : count.toLocaleString()}
       </span>
@@ -236,6 +241,7 @@ export function Sidebar({
                       active={isSelected(selection, candidate)}
                       icon={project.available ? Gamepad2 : FolderCog}
                       label={project.name}
+                      description={project.rootPath}
                       count={project.assetCount}
                       title={project.available ? project.rootPath : `Missing · ${project.rootPath}`}
                       warning={!project.available}

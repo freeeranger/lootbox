@@ -41,6 +41,8 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof DetailPanel>
     asset,
     selectedCount: 3,
     selectedAssets: [asset, { ...asset, id: 2 }, { ...asset, id: 3 }],
+    tagInputRef: { current: null },
+    busy: false,
     collections: [],
     onAddTag: vi.fn(),
     onRemoveTag: vi.fn(),
@@ -52,7 +54,6 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof DetailPanel>
     onClassification: vi.fn(),
     onGroup: vi.fn(),
     onResetClassification: vi.fn(),
-    onPreviewError: vi.fn(),
     onAddCollection: vi.fn(),
     ...overrides,
   };
@@ -75,7 +76,7 @@ describe("DetailPanel classification controls", () => {
     const props = renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "Group selected" }));
     expect(props.onGroup).toHaveBeenCalledWith("merge");
-    expect(screen.getByText("Missing from disk")).toBeInTheDocument();
+    expect(screen.getByText(/missing from disk/)).toBeInTheDocument();
     expect(screen.getByText(/survive rescans/)).toBeInTheDocument();
   });
 

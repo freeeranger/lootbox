@@ -48,6 +48,19 @@ export interface GodotExportResult {
   destination: string;
 }
 
+export interface GodotExportPreview {
+  selected: number;
+  related: number;
+  grouped: number;
+  dependencies: number;
+  totalFiles: number;
+  conflicts: number;
+  conflictFiles: string[];
+  destination: string;
+  manifest: string;
+  files: string[];
+}
+
 export interface TypeCount {
   assetType: AssetType;
   count: number;
@@ -164,6 +177,14 @@ export interface AssetPage {
 export interface AssetSelection {
   id: number;
   absolutePath: string;
+}
+
+export interface ClassificationOverrideSnapshot {
+  assetId: number;
+  assetType: string | null;
+  mapRole: string | null;
+  groupKey: string | null;
+  existed: boolean;
 }
 
 export interface AudioStatus {
