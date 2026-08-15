@@ -2,7 +2,7 @@ import { Activity, FolderOpen, Gamepad2, History, RefreshCw, TriangleAlert, X } 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { collapseHomePath } from "@/lib/utils";
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { ProjectStatus, ProjectSummary } from "../types";
 
 function formatExportTime(value: string | null) {
@@ -11,7 +11,7 @@ function formatExportTime(value: string | null) {
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
-export function ProjectWorkspaceBar({
+function ProjectWorkspaceBarComponent({
   project,
   status,
   loading,
@@ -175,3 +175,5 @@ export function ProjectWorkspaceBar({
     </>
   );
 }
+
+export const ProjectWorkspaceBar = memo(ProjectWorkspaceBarComponent);

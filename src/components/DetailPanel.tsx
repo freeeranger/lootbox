@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, memo, Suspense, useEffect, useState } from "react";
 import type { RefObject } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Clipboard, ExternalLink, FolderOpen, Plus, RotateCcw, X } from "lucide-react";
@@ -237,7 +237,7 @@ function IconAction({
   );
 }
 
-export function DetailPanel({
+function DetailPanelComponent({
   asset,
   selectedCount,
   selectedAssets,
@@ -698,3 +698,5 @@ export function DetailPanel({
     </aside>
   );
 }
+
+export const DetailPanel = memo(DetailPanelComponent);

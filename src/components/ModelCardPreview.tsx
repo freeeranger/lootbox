@@ -227,6 +227,13 @@ function getPreview(path: string) {
   previews.set(path, preview);
   renderQueue = renderQueue
     .then(async () => {
+      await new Promise<void>((resolve) => {
+        if (typeof window.requestIdleCallback === "function") {
+          window.requestIdleCallback(() => resolve(), { timeout: 32 });
+        } else {
+          window.setTimeout(resolve, 16);
+        }
+      });
       try {
         resolvePreview(await renderPreviewWithTimeout(path));
         completedPreviews.add(path);
@@ -304,22 +311,27 @@ export function ModelCardPreview({ asset, iconSize, onError }: { asset: Asset; i
     const host = hostRef.current;
     if (!host) return;
     let active = true;
+    let timeoutId: number | null = null;
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return;
         observer.disconnect();
-        void prepareModelThumbnail(asset)
-          .then((nextSource) => {
-            if (!nextSource) return;
-            if (active) setSource(nextSource);
-          })
-          .catch((error) => onErrorRef.current?.(error));
+        timeoutId = window.setTimeout(() => {
+          if (!active) return;
+          void prepareModelThumbnail(asset)
+            .then((nextSource) => {
+              if (!nextSource) return;
+              if (active) setSource(nextSource);
+            })
+            .catch((error) => onErrorRef.current?.(error));
+        }, 60);
       },
-      { rootMargin: "240px" },
+      { rootMargin: "160px" },
     );
     observer.observe(host);
     return () => {
       active = false;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
       observer.disconnect();
     };
   }, [asset.absolutePath, asset.id]);

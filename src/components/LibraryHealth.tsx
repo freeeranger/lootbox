@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { collapseHomePath } from "@/lib/utils";
+import { memo } from "react";
 import type { LibrarySnapshot, ProjectStatus } from "../types";
 
 interface Props {
@@ -56,7 +57,7 @@ function HealthRow({
   );
 }
 
-export function LibraryHealth({
+function LibraryHealthComponent({
   snapshot,
   activeProjectName,
   projectStatus,
@@ -148,3 +149,5 @@ export function LibraryHealth({
     </div>
   );
 }
+
+export const LibraryHealth = memo(LibraryHealthComponent);

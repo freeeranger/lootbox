@@ -73,7 +73,7 @@ function AudioCardControl({
     <button
       type="button"
       className={cn(
-        "absolute z-10 grid place-items-center border border-border/70 bg-background/90 text-foreground shadow-xs backdrop-blur-sm transition-colors hover:bg-accent hover:border-foreground/30 cursor-pointer",
+        "absolute z-10 grid place-items-center border border-border/70 bg-background/95 text-foreground shadow-xs transition-colors hover:bg-accent hover:border-foreground/30 cursor-pointer",
         view === "grid" ? "top-2 left-2 size-6 rounded-sm" : "top-1/2 left-[25px] size-7 -translate-x-1/2 -translate-y-1/2 rounded-full",
       )}
       aria-label={playing ? `Pause ${asset.name}` : `Play ${asset.name}`}
@@ -235,7 +235,7 @@ function AssetCardComponent({
       </span>
 
       {view === "grid" && asset.duplicateCount > 1 && (
-        <span className={cn("absolute left-3 flex h-5 items-center gap-1 rounded-sm border border-border/80 bg-background/90 px-1.5 text-[11px] text-muted-foreground backdrop-blur-sm", asset.assetType === "audio" ? "top-10" : "top-3")} title={`${asset.duplicateCount} identical files`}>
+        <span className={cn("absolute left-3 flex h-5 items-center gap-1 rounded-sm border border-border/80 bg-background/95 px-1.5 text-[11px] text-muted-foreground", asset.assetType === "audio" ? "top-10" : "top-3")} title={`${asset.duplicateCount} identical files`}>
           <Copy className="size-2.5" /> {asset.duplicateCount}
         </span>
       )}

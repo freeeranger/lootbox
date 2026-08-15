@@ -1260,7 +1260,7 @@ function App() {
     }
   }
 
-  async function mutateSelected(mutation: () => Promise<void>) {
+  const mutateSelected = useCallback(async (mutation: () => Promise<void>) => {
     if (editingSelection) return false;
     setEditingSelection(true);
     try {
@@ -1273,19 +1273,19 @@ function App() {
     } finally {
       setEditingSelection(false);
     }
-  }
+  }, [editingSelection, refresh, reportError]);
 
-  function guardedBulkMutation(
+  const guardedBulkMutation = useCallback((
     title: string,
     description: string,
     mutation: () => Promise<void>,
-  ) {
+  ) => {
     if (selectedIdsRef.current.size >= guardedBulkEditThreshold) {
       setPendingBulkMutation({ title, description, run: async () => { await mutateSelected(mutation); } });
       return Promise.resolve();
     }
     return mutateSelected(mutation).then(() => undefined);
-  }
+  }, [mutateSelected]);
 
   async function deleteCurrentSource() {
     try {
@@ -1489,7 +1489,7 @@ function App() {
     getScrollElement: getAssetScrollElement,
     estimateSize: estimateAssetRowSize,
     gap: view === "grid" ? 16 : 0,
-    overscan: view === "grid" ? 1 : 4,
+    overscan: view === "grid" ? 4 : 8,
     getItemKey: getAssetRowKey,
   });
   const virtualRows = virtualizer.getVirtualItems();
@@ -1759,6 +1759,180 @@ function App() {
     [assets, clearAssetSelection, refresh, reportError],
   );
 
+  const handleSidebarSelect = useCallback((next: LibrarySelection) => {
+    setSelection(next);
+    setActiveSavedViewId(null);
+    clearAssetSelection();
+  }, [clearAssetSelection]);
+
+  const handleRelocateProject = useCallback((project: ProjectSummary) => {
+    void relocateGodotProject(project);
+  }, [relocateGodotProject]);
+
+  const handleDeleteSavedView = useCallback((view: SavedAssetView) => {
+    setSavedViews((current) => current.filter((candidate) => candidate.id !== view.id));
+    setActiveSavedViewId((current) => (current === view.id ? null : current));
+    setMetadataUndo({
+      label: `Undo deleting “${view.name}”`,
+      run: async () => setSavedViews((current) => current.some((candidate) => candidate.id === view.id) ? current : [...current, view]),
+    });
+    setNotice(`${view.name} deleted`);
+  }, []);
+
+  const handleSidebarImport = useCallback(() => {
+    void importPack();
+  }, [importPack]);
+
+  const handleStartCollection = useCallback(() => {
+    setAddSelectionToNewCollection(false);
+    setCreatingCollection(true);
+  }, []);
+
+  const handleRescanPack = useCallback((pack: PackSummary) => {
+    void rescanPack(pack);
+  }, [rescanPack]);
+
+  const handleOpenPack = useCallback((pack: PackSummary) => {
+    void api.openAsset(pack.rootPath).catch((caught) => reportError(caught, "open-pack"));
+  }, [reportError]);
+
+  const handleRelocatePack = useCallback((pack: PackSummary) => {
+    void relocatePack(pack);
+  }, [relocatePack]);
+
+  const handleViewRemoved = useCallback((pack: PackSummary) => {
+    setSelection({ kind: "removed", packId: pack.id });
+    clearAssetSelection();
+  }, [clearAssetSelection]);
+
+  const handleViewMissing = useCallback((pack: PackSummary) => {
+    setSelection({ kind: "missing", packId: pack.id });
+    clearAssetSelection();
+  }, [clearAssetSelection]);
+
+  const handleAddProject = useCallback(() => {
+    void addGodotProject();
+  }, [addGodotProject]);
+
+  const handleOpenProject = useCallback((project: ProjectSummary) => {
+    void api.openAsset(project.rootPath).catch((caught) => reportError(caught, "open-project"));
+  }, [reportError]);
+
+  const handleOpenSettings = useCallback(() => {
+    setSettingsMessage("");
+    setSettingsOpen(true);
+  }, []);
+
+  const handleOpenShortcuts = useCallback(() => {
+    setShortcutsOpen(true);
+  }, []);
+
+  const handleOpenActiveProject = useCallback(() => {
+    if (!activeProject) return;
+    void api.openAsset(activeProject.rootPath).catch((caught) => reportError(caught, "open-project"));
+  }, [activeProject, reportError]);
+
+  const handleRefreshActiveProject = useCallback(() => {
+    void projectStatusQuery.refetch();
+  }, [projectStatusQuery]);
+
+  const handleViewActiveProjectAssets = useCallback(() => {
+    if (!activeProject) return;
+    setSelection({ kind: "project", projectId: activeProject.id });
+    setActiveSavedViewId(null);
+    clearAssetSelection();
+  }, [activeProject, clearAssetSelection]);
+
+  const handleClearActiveProjectTarget = useCallback(() => {
+    activateProject(null);
+  }, [activateProject]);
+
+  const handleDetailAddTag = useCallback(async (name: string) => {
+    let changed: number[] = [];
+    if (await mutateSelected(async () => { changed = await api.addTags([...selectedIdsRef.current], name); }) && changed.length > 0) {
+      setMetadataUndo({ label: `Undo adding “${name}”`, run: async () => { await api.removeTags(changed, name); await refresh(); } });
+      setNotice(`Added “${name}” to ${changed.length.toLocaleString()} assets`);
+    }
+  }, [mutateSelected, refresh]);
+
+  const handleDetailRemoveTag = useCallback(async (name: string) => {
+    let changed: number[] = [];
+    if (await mutateSelected(async () => { changed = await api.removeTags([...selectedIdsRef.current], name); }) && changed.length > 0) {
+      setMetadataUndo({ label: `Undo removing “${name}”`, run: async () => { await api.addTags(changed, name); await refresh(); } });
+      setNotice(`Removed “${name}” from ${changed.length.toLocaleString()} assets`);
+    }
+  }, [mutateSelected, refresh]);
+
+  const handleDetailMembership = useCallback(async (collectionId: number, included: boolean) => {
+    const collection = snapshot.collections.find((item) => item.id === collectionId);
+    let changed: number[] = [];
+    if (await mutateSelected(async () => { changed = await api.setCollectionMemberships([...selectedIdsRef.current], collectionId, included); }) && changed.length > 0) {
+      setMetadataUndo({ label: `Undo collection change`, run: async () => { await api.setCollectionMemberships(changed, collectionId, !included); await refresh(); } });
+      setNotice(`${included ? "Added to" : "Removed from"} ${collection?.name ?? "collection"} · ${changed.length.toLocaleString()} assets`);
+    }
+  }, [mutateSelected, refresh, snapshot.collections]);
+
+  const handleDetailClassification = useCallback((assetType?: string, mapRole?: string) => {
+    return guardedBulkMutation(
+      `Change classification for ${selectedIdsRef.current.size.toLocaleString()} assets?`,
+      `This applies the new classification to every selected asset. Source files stay untouched.`,
+      async () => {
+        const snapshots = await api.setClassificationOverride([...selectedIdsRef.current], assetType, mapRole);
+        if (snapshots.length > 0) {
+          setMetadataUndo({ label: "Undo classification change", run: async () => {
+            await api.restoreClassificationOverrides(snapshots);
+            await refresh();
+          } });
+          setNotice(`Classification updated · ${snapshots.length.toLocaleString()} assets`);
+        }
+      },
+    );
+  }, [guardedBulkMutation, refresh]);
+
+  const handleDetailGroup = useCallback((action: "merge" | "split") => guardedBulkMutation(
+    `${action === "merge" ? "Group" : "Separate"} ${selectedIdsRef.current.size.toLocaleString()} assets?`,
+    `${action === "merge" ? "Grouping" : "Separating"} changes how all selected files are presented and exported. Source files stay untouched.`,
+    async () => {
+      const snapshots = await api.setClassificationOverride([...selectedIdsRef.current], undefined, undefined, action);
+      if (snapshots.length > 0) {
+        setMetadataUndo({ label: `Undo ${action === "merge" ? "grouping" : "separation"}`, run: async () => {
+          await api.restoreClassificationOverrides(snapshots);
+          await refresh();
+        } });
+        setNotice(`${action === "merge" ? "Grouped" : "Separated"} ${snapshots.length.toLocaleString()} assets`);
+      }
+    },
+  ), [guardedBulkMutation, refresh]);
+
+  const handleDetailResetClassification = useCallback(() => mutateSelected(async () => {
+    const snapshots = await api.resetClassificationOverride([...selectedIdsRef.current]);
+    if (snapshots.some((snapshot) => snapshot.existed)) {
+      setMetadataUndo({ label: "Undo automatic classification", run: async () => {
+        await api.restoreClassificationOverrides(snapshots);
+        await refresh();
+      } });
+      setNotice(`Automatic classification restored · ${snapshots.length.toLocaleString()} assets`);
+    }
+  }).then(() => undefined), [mutateSelected, refresh]);
+
+  const handleDetailAddCollection = useCallback(() => {
+    setAddSelectionToNewCollection(true);
+    setCreatingCollection(true);
+  }, []);
+
+  const handleDetailOpen = useCallback(() => {
+    if (!selectedAsset) return;
+    void api.openAsset(selectedAsset.absolutePath).catch((caught) => reportError(caught, "open-asset"));
+  }, [reportError, selectedAsset]);
+
+  const handleDetailOpenVariant = useCallback((path: string) => {
+    void api.openAsset(path).catch((caught) => reportError(caught, "open-asset"));
+  }, [reportError]);
+
+  const handleDetailRevealPath = useCallback((path: string) => {
+    void api.revealAsset(path).catch((caught) => reportError(caught, "reveal-asset"));
+  }, [reportError]);
+
   useEffect(() => {
     const handleLibraryKeys = (event: KeyboardEvent) => {
       if (
@@ -1903,54 +2077,26 @@ function App() {
             activeProjectAttention={activeProjectAttention}
             savedViews={savedViews}
             activeSavedViewId={activeSavedViewId}
-            onSelect={(next) => {
-              setSelection(next);
-              setActiveSavedViewId(null);
-              clearAssetSelection();
-            }}
+            onSelect={handleSidebarSelect}
             onActivateProject={activateProject}
-            onRelocateProject={(project) => void relocateGodotProject(project)}
+            onRelocateProject={handleRelocateProject}
             onOpenSavedView={openSavedView}
-            onDeleteSavedView={(view) => {
-              setSavedViews((current) => current.filter((candidate) => candidate.id !== view.id));
-              if (activeSavedViewId === view.id) setActiveSavedViewId(null);
-              setMetadataUndo({
-                label: `Undo deleting “${view.name}”`,
-                run: async () => setSavedViews((current) => current.some((candidate) => candidate.id === view.id) ? current : [...current, view]),
-              });
-              setNotice(`${view.name} deleted`);
-            }}
-            onImport={() => void importPack()}
-            onStartCollection={() => {
-              setAddSelectionToNewCollection(false);
-              setCreatingCollection(true);
-            }}
+            onDeleteSavedView={handleDeleteSavedView}
+            onImport={handleSidebarImport}
+            onStartCollection={handleStartCollection}
             onRenamePack={startRenamePack}
-            onRescanPack={(pack) => void rescanPack(pack)}
-            onOpenPack={(pack) =>
-              void api.openAsset(pack.rootPath).catch((caught) => reportError(caught, "open-pack"))
-            }
-            onRelocatePack={(pack) => void relocatePack(pack)}
+            onRescanPack={handleRescanPack}
+            onOpenPack={handleOpenPack}
+            onRelocatePack={handleRelocatePack}
             onForgetPack={requestForgetPack}
-            onViewRemoved={(pack) => {
-              setSelection({ kind: "removed", packId: pack.id });
-              clearAssetSelection();
-            }}
-            onViewMissing={(pack) => {
-              setSelection({ kind: "missing", packId: pack.id });
-              clearAssetSelection();
-            }}
+            onViewRemoved={handleViewRemoved}
+            onViewMissing={handleViewMissing}
             onPurgeMissing={setConfirmPurge}
-            onAddProject={() => void addGodotProject()}
-            onOpenProject={(project) =>
-              void api.openAsset(project.rootPath).catch((caught) => reportError(caught, "open-project"))
-            }
+            onAddProject={handleAddProject}
+            onOpenProject={handleOpenProject}
             onForgetProject={setConfirmProjectRemoval}
-            onSettings={() => {
-              setSettingsMessage("");
-              setSettingsOpen(true);
-            }}
-            onShortcuts={() => setShortcutsOpen(true)}
+            onSettings={handleOpenSettings}
+            onShortcuts={handleOpenShortcuts}
           />
         </div>
       )}
@@ -2210,14 +2356,10 @@ function App() {
             status={projectStatusQuery.data}
             loading={projectStatusQuery.isFetching}
             isProjectView={selection.kind === "project" && selection.projectId === activeProject.id}
-            onOpen={() => void api.openAsset(activeProject.rootPath).catch((caught) => reportError(caught, "open-project"))}
-            onRefresh={() => void projectStatusQuery.refetch()}
-            onViewAssets={() => {
-              setSelection({ kind: "project", projectId: activeProject.id });
-              setActiveSavedViewId(null);
-              clearAssetSelection();
-            }}
-            onClearTarget={() => activateProject(null)}
+            onOpen={handleOpenActiveProject}
+            onRefresh={handleRefreshActiveProject}
+            onViewAssets={handleViewActiveProjectAssets}
+            onClearTarget={handleClearActiveProjectTarget}
           />
         )}
 
@@ -2545,7 +2687,10 @@ function App() {
             )}
             <div
               className="relative w-full"
-              style={{ height: virtualizer.getTotalSize() + 24 }}
+              style={{
+                height: virtualizer.getTotalSize() + 24,
+                contain: "layout paint",
+              }}
             >
               {virtualRows.map((virtualRow) => {
                 if (virtualRow.index >= assetRowCount) {
@@ -2556,6 +2701,7 @@ function App() {
                       style={{
                         height: virtualRow.size,
                         transform: `translateY(${virtualRow.start}px)`,
+                        contain: "layout paint",
                       }}
                     >
                       {loadingMore && <LoaderCircle className="size-3.5 animate-spin" />}
@@ -2581,11 +2727,13 @@ function App() {
                     )}
                     style={{
                       width: view === "grid" ? "100%" : undefined,
+                      height: `${virtualRow.size}px`,
                       gridTemplateColumns:
                         view === "grid"
                           ? `repeat(${gridColumns}, minmax(0, 1fr))`
                           : undefined,
                       transform: `translateY(${virtualRow.start}px)`,
+                      contain: "layout paint",
                     }}
                   >
                     {rowAssets.filter(Boolean).map((asset, columnIndex) => {
@@ -2686,86 +2834,17 @@ function App() {
               tagInputRef={tagInputRef}
               busy={editingSelection}
               collections={snapshot.collections}
-              onAddTag={async (name) => {
-                let changed: number[] = [];
-                if (await mutateSelected(async () => { changed = await api.addTags([...selectedIds], name); }) && changed.length > 0) {
-                  setMetadataUndo({ label: `Undo adding “${name}”`, run: async () => { await api.removeTags(changed, name); await refresh(); } });
-                  setNotice(`Added “${name}” to ${changed.length.toLocaleString()} assets`);
-                }
-              }}
-              onRemoveTag={async (name) => {
-                let changed: number[] = [];
-                if (await mutateSelected(async () => { changed = await api.removeTags([...selectedIds], name); }) && changed.length > 0) {
-                  setMetadataUndo({ label: `Undo removing “${name}”`, run: async () => { await api.addTags(changed, name); await refresh(); } });
-                  setNotice(`Removed “${name}” from ${changed.length.toLocaleString()} assets`);
-                }
-              }}
-              onMembership={async (collectionId, included) => {
-                const collection = snapshot.collections.find((item) => item.id === collectionId);
-                let changed: number[] = [];
-                if (await mutateSelected(async () => { changed = await api.setCollectionMemberships([...selectedIds], collectionId, included); }) && changed.length > 0) {
-                  setMetadataUndo({ label: `Undo collection change`, run: async () => { await api.setCollectionMemberships(changed, collectionId, !included); await refresh(); } });
-                  setNotice(`${included ? "Added to" : "Removed from"} ${collection?.name ?? "collection"} · ${changed.length.toLocaleString()} assets`);
-                }
-              }}
-              onClassification={(assetType, mapRole) => {
-                return guardedBulkMutation(
-                  `Change classification for ${selectedIds.size.toLocaleString()} assets?`,
-                  `This applies the new classification to every selected asset. Source files stay untouched.`,
-                  async () => {
-                    const snapshots = await api.setClassificationOverride([...selectedIds], assetType, mapRole);
-                    if (snapshots.length > 0) {
-                      setMetadataUndo({ label: "Undo classification change", run: async () => {
-                        await api.restoreClassificationOverrides(snapshots);
-                        await refresh();
-                      } });
-                      setNotice(`Classification updated · ${snapshots.length.toLocaleString()} assets`);
-                    }
-                  },
-                );
-              }}
-              onGroup={(action) => guardedBulkMutation(
-                `${action === "merge" ? "Group" : "Separate"} ${selectedIds.size.toLocaleString()} assets?`,
-                `${action === "merge" ? "Grouping" : "Separating"} changes how all selected files are presented and exported. Source files stay untouched.`,
-                async () => {
-                  const snapshots = await api.setClassificationOverride([...selectedIds], undefined, undefined, action);
-                  if (snapshots.length > 0) {
-                    setMetadataUndo({ label: `Undo ${action === "merge" ? "grouping" : "separation"}`, run: async () => {
-                      await api.restoreClassificationOverrides(snapshots);
-                      await refresh();
-                    } });
-                    setNotice(`${action === "merge" ? "Grouped" : "Separated"} ${snapshots.length.toLocaleString()} assets`);
-                  }
-                },
-              )}
-              onResetClassification={() => mutateSelected(async () => {
-                const snapshots = await api.resetClassificationOverride([...selectedIds]);
-                if (snapshots.some((snapshot) => snapshot.existed)) {
-                  setMetadataUndo({ label: "Undo automatic classification", run: async () => {
-                    await api.restoreClassificationOverrides(snapshots);
-                    await refresh();
-                  } });
-                  setNotice(`Automatic classification restored · ${snapshots.length.toLocaleString()} assets`);
-                }
-              }).then(() => undefined)}
-              onAddCollection={() => {
-                setAddSelectionToNewCollection(true);
-                setCreatingCollection(true);
-              }}
+              onAddTag={handleDetailAddTag}
+              onRemoveTag={handleDetailRemoveTag}
+              onMembership={handleDetailMembership}
+              onClassification={handleDetailClassification}
+              onGroup={handleDetailGroup}
+              onResetClassification={handleDetailResetClassification}
+              onAddCollection={handleDetailAddCollection}
               onCopyPath={copyAssetPath}
-              onOpen={() =>
-                void api
-                  .openAsset(selectedAsset.absolutePath)
-                  .catch((caught) => reportError(caught, "open-asset"))
-              }
-              onOpenVariant={(path) =>
-                void api.openAsset(path).catch((caught) => reportError(caught, "open-asset"))
-              }
-              onRevealPath={(path) =>
-                void api
-                  .revealAsset(path)
-                  .catch((caught) => reportError(caught, "reveal-asset"))
-              }
+              onOpen={handleDetailOpen}
+              onOpenVariant={handleDetailOpenVariant}
+              onRevealPath={handleDetailRevealPath}
             />
           ) : (
             <aside className="h-full min-w-0 border-l bg-background">

@@ -58,7 +58,7 @@ import type {
 } from "../types";
 import type { SavedAssetView } from "../savedViews";
 import lootboxIcon from "../../src-tauri/icons/icon.svg";
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 
 const typeMetadata: Record<AssetType, { label: string; icon: typeof Image }> = {
   image: { label: "Images", icon: Image },
@@ -218,7 +218,7 @@ function SectionHeader({ label, count, collapsed, onToggle, action }: SectionHea
   );
 }
 
-export function Sidebar({
+function SidebarComponent({
   snapshot,
   selection,
   creatingCollection,
@@ -665,3 +665,5 @@ export function Sidebar({
     </aside>
   );
 }
+
+export const Sidebar = memo(SidebarComponent);
