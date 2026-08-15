@@ -2596,30 +2596,30 @@ fn fts_query(input: &str) -> Option<String> {
 }
 
 fn asset_query_filter(request: &AssetQuery) -> (String, Vec<rusqlite::types::Value>) {
-    let mut conditions = Vec::new();
+    let mut conditions: Vec<String> = Vec::new();
     let mut values: Vec<rusqlite::types::Value> = Vec::new();
     if !request.missing.unwrap_or(false) {
-        conditions.push("a.is_primary = 1");
+        conditions.push("a.is_primary = 1".to_string());
     }
     conditions.push(if request.excluded.unwrap_or(false) {
-        "a.excluded = 1"
+        "a.excluded = 1".to_string()
     } else {
-        "a.excluded = 0"
+        "a.excluded = 0".to_string()
     });
     conditions.push(if request.missing.unwrap_or(false) {
-        "a.missing = 1"
+        "a.missing = 1".to_string()
     } else {
-        "a.missing = 0"
+        "a.missing = 0".to_string()
     });
 
     if let Some(search_query) = request.query.as_deref().and_then(fts_query) {
         conditions.push(
-            "a.id IN (SELECT CAST(asset_id AS INTEGER) FROM assets_fts WHERE assets_fts MATCH ?)",
+            "a.id IN (SELECT CAST(asset_id AS INTEGER) FROM assets_fts WHERE assets_fts MATCH ?)".to_string(),
         );
         values.push(search_query.into());
     }
     if let Some(asset_id) = request.asset_id {
-        conditions.push("a.id = ?");
+        conditions.push("a.id = ?".to_string());
         values.push(asset_id.into());
     }
     if let Some(asset_type) = request
@@ -2627,16 +2627,16 @@ fn asset_query_filter(request: &AssetQuery) -> (String, Vec<rusqlite::types::Val
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        conditions.push("a.asset_type = ?");
+        conditions.push("a.asset_type = ?".to_string());
         values.push(asset_type.to_owned().into());
     }
     if let Some(pack_id) = request.pack_id {
-        conditions.push("a.pack_id = ?");
+        conditions.push("a.pack_id = ?".to_string());
         values.push(pack_id.into());
     }
     if let Some(collection_id) = request.collection_id {
         conditions.push(
-            "EXISTS (SELECT 1 FROM collection_assets selected_ca WHERE selected_ca.asset_id = a.id AND selected_ca.collection_id = ?)",
+            "EXISTS (SELECT 1 FROM collection_assets selected_ca WHERE selected_ca.asset_id = a.id AND selected_ca.collection_id = ?)".to_string(),
         );
         values.push(collection_id.into());
     }
@@ -2653,7 +2653,7 @@ fn asset_query_filter(request: &AssetQuery) -> (String, Vec<rusqlite::types::Val
                       AND exported_asset.pack_id = a.pack_id
                       AND exported_asset.group_key = a.group_key)
                   )
-            )"#,
+            )"#.to_string(),
         );
         values.push(project_id.into());
     }
@@ -2667,42 +2667,69 @@ fn asset_query_filter(request: &AssetQuery) -> (String, Vec<rusqlite::types::Val
                   (a.group_key IS NOT NULL
                     AND exported_asset.pack_id = a.pack_id
                     AND exported_asset.group_key = a.group_key)
-            )"#,
+            )"#.to_string(),
         );
     }
     if request.duplicates_only.unwrap_or(false) {
-        conditions.push("a.content_hash IS NOT NULL AND (SELECT COUNT(*) FROM assets duplicate WHERE duplicate.content_hash = a.content_hash AND duplicate.missing = 0) > 1");
+        conditions.push("a.content_hash IS NOT NULL AND (SELECT COUNT(*) FROM assets duplicate WHERE duplicate.content_hash = a.content_hash AND duplicate.missing = 0) > 1".to_string());
     }
     if let Some(extension) = request
         .extension
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        conditions.push("a.extension = ?");
-        values.push(extension.to_owned().into());
+        let exts: Vec<&str> = extension.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        if exts.len() == 1 {
+            conditions.push("a.extension = ?".to_string());
+            values.push(exts[0].to_owned().into());
+        } else if !exts.is_empty() {
+            let placeholders = vec!["?"; exts.len()].join(", ");
+            conditions.push(format!("a.extension IN ({})", placeholders));
+            for ext in exts {
+                values.push(ext.to_owned().into());
+            }
+        }
     }
     if let Some(map_role) = request
         .map_role
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        conditions.push("a.map_role = ?");
-        values.push(map_role.to_owned().into());
+        let roles: Vec<&str> = map_role.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        if roles.len() == 1 {
+            conditions.push("a.map_role = ?".to_string());
+            values.push(roles[0].to_owned().into());
+        } else if !roles.is_empty() {
+            let placeholders = vec!["?"; roles.len()].join(", ");
+            conditions.push(format!("a.map_role IN ({})", placeholders));
+            for role in roles {
+                values.push(role.to_owned().into());
+            }
+        }
     }
     if let Some(tag) = request.tag.as_deref().filter(|value| !value.is_empty()) {
-        conditions.push("EXISTS (SELECT 1 FROM asset_tags filter_at JOIN tags filter_tag ON filter_tag.id = filter_at.tag_id WHERE filter_at.asset_id = a.id AND filter_tag.name = ? COLLATE NOCASE)");
-        values.push(tag.to_owned().into());
+        let tags: Vec<&str> = tag.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        if tags.len() == 1 {
+            conditions.push("EXISTS (SELECT 1 FROM asset_tags filter_at JOIN tags filter_tag ON filter_tag.id = filter_at.tag_id WHERE filter_at.asset_id = a.id AND filter_tag.name = ? COLLATE NOCASE)".to_string());
+            values.push(tags[0].to_owned().into());
+        } else if !tags.is_empty() {
+            let placeholders = vec!["?"; tags.len()].join(", ");
+            conditions.push(format!("EXISTS (SELECT 1 FROM asset_tags filter_at JOIN tags filter_tag ON filter_tag.id = filter_at.tag_id WHERE filter_at.asset_id = a.id AND filter_tag.name IN ({}) COLLATE NOCASE)", placeholders));
+            for t in tags {
+                values.push(t.to_owned().into());
+            }
+        }
     }
     if let Some(min_width) = request.min_width.filter(|value| *value > 0) {
-        conditions.push("a.width >= ?");
+        conditions.push("a.width >= ?".to_string());
         values.push(min_width.into());
     }
     if let Some(min_height) = request.min_height.filter(|value| *value > 0) {
-        conditions.push("a.height >= ?");
+        conditions.push("a.height >= ?".to_string());
         values.push(min_height.into());
     }
     if let Some(min_confidence) = request.min_confidence {
-        conditions.push("a.classification_confidence <= ?");
+        conditions.push("a.classification_confidence <= ?".to_string());
         values.push(min_confidence.clamp(0, 100).into());
     }
     (conditions.join(" AND "), values)

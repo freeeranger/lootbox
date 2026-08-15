@@ -1,7 +1,7 @@
 import { lazy, memo, Suspense, useState, useSyncExternalStore } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Check, Clipboard, Copy, ExternalLink, FolderMinus, FolderOpen, LoaderCircle, Pause, Play, RotateCcw, Trash2 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, truncateMiddle } from "@/lib/utils";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -202,7 +202,10 @@ function AssetCardComponent({
         ) : asset.assetType === "model" && ["glb", "gltf"].includes(asset.extension) && view === "grid" ? (
           <Suspense
             fallback={
-              <span className="grid size-full place-items-center text-muted-foreground/65">
+              <span className="relative grid size-full place-items-center text-muted-foreground/65">
+                <span className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-40">
+                  <span className="size-20 rounded-full bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-primary/20 via-border/30 to-transparent scale-y-50 translate-y-3" />
+                </span>
                 <AssetTypeIcon type="model" size={view === "grid" ? 30 : 15} />
               </span>
             }
@@ -218,7 +221,12 @@ function AssetCardComponent({
             />
           </Suspense>
         ) : (
-          <span className="grid size-full place-items-center text-muted-foreground/65">
+          <span className="relative grid size-full place-items-center text-muted-foreground/65">
+            {asset.assetType === "model" && view === "grid" && (
+              <span className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-40">
+                <span className="size-20 rounded-full bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-primary/20 via-border/30 to-transparent scale-y-50 translate-y-3" />
+              </span>
+            )}
             <AssetTypeIcon type={asset.assetType} size={view === "grid" ? 30 : 15} />
           </span>
         )}
@@ -237,7 +245,9 @@ function AssetCardComponent({
       )}
 
       <span className={cn("min-w-0", view === "grid" && "mt-1.5 block px-0.5")}>
-        <span className="block truncate text-xs font-medium text-foreground/90">{asset.name}</span>
+        <span className="block truncate text-xs font-medium text-foreground/90" title={asset.name}>
+          {truncateMiddle(asset.name, view === "grid" ? 28 : 40)}
+        </span>
         {view === "grid" && (
           <span className="mt-0.5 flex min-w-0 items-center gap-1 truncate text-[11px] text-muted-foreground">
             <span className="font-mono uppercase">{asset.extension || asset.assetType}</span>

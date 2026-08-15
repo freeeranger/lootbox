@@ -11,6 +11,9 @@ import {
   BookmarkPlus,
   Box,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsUpDown,
   Copy,
   DatabaseBackup,
   ExternalLink,
@@ -77,6 +80,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverHeading,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -87,7 +96,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { cn, collapseHomePath } from "@/lib/utils";
 import { toggleAudioPlayback } from "./audioPlayback";
 import { godotExportCompletionCopy } from "./godotExportCompletion";
 import { readProjectModelFormats, writeProjectModelFormats } from "./godotExportPreferences";
@@ -231,9 +240,13 @@ function AssetSearch({
         value={value}
         onChange={(event) => onValueChange(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === "Escape" && value) {
+          if (event.key === "Escape") {
             event.preventDefault();
-            clear();
+            if (value) {
+              clear();
+            } else {
+              inputRef.current?.blur();
+            }
           }
         }}
         placeholder="Search names, paths, packs, and tags"
@@ -294,6 +307,93 @@ function FilterSelect({
         </SelectContent>
       </Select>
     </label>
+  );
+}
+
+function MultiFilterSelect({
+  label,
+  value,
+  placeholder,
+  options,
+  onValueChange,
+  className,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  options: Array<{ value: string; label: string }>;
+  onValueChange: (value: string) => void;
+  className?: string;
+}) {
+  const selectedValues = useMemo(
+    () => (value ? value.split(",").map((s) => s.trim()).filter(Boolean) : []),
+    [value],
+  );
+
+  const displayLabel = useMemo(() => {
+    if (selectedValues.length === 0) return placeholder;
+    if (selectedValues.length === 1) {
+      const match = options.find((opt) => opt.value === selectedValues[0]);
+      return match ? match.label : selectedValues[0];
+    }
+    return `${selectedValues.length} selected`;
+  }, [options, placeholder, selectedValues]);
+
+  const toggleValue = (val: string) => {
+    let next: string[];
+    if (selectedValues.includes(val)) {
+      next = selectedValues.filter((v) => v !== val);
+    } else {
+      next = [...selectedValues, val];
+    }
+    onValueChange(next.join(","));
+  };
+
+  return (
+    <div className={cn("block min-w-0", className)}>
+      <span className="mb-1.5 block text-[11px] font-medium text-muted-foreground">{label}</span>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 w-full justify-between rounded-md px-2.5 text-xs font-normal"
+            >
+              <span className="truncate">{displayLabel}</span>
+              <ChevronsUpDown className="size-3 shrink-0 text-muted-foreground" />
+            </Button>
+          }
+        />
+        <DropdownMenuContent align="start" className="max-h-60 w-52 overflow-y-auto p-1 text-xs">
+          <DropdownMenuItem
+            className="flex items-center justify-between px-2 py-1.5 cursor-pointer text-xs"
+            onClick={() => onValueChange("")}
+          >
+            <span>{placeholder}</span>
+            {selectedValues.length === 0 && <Check className="size-3.5 text-primary" />}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {options.map((option) => {
+            const isChecked = selectedValues.includes(option.value);
+            return (
+              <DropdownMenuItem
+                key={option.value}
+                className="flex items-center justify-between px-2 py-1.5 cursor-pointer text-xs"
+                onClick={(e) => {
+                  e.preventDefault();
+                  toggleValue(option.value);
+                }}
+              >
+                <span className="truncate">{option.label}</span>
+                {isChecked && <Check className="size-3.5 text-primary" />}
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }
 
@@ -399,6 +499,9 @@ function App() {
       320,
     ),
   );
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(() =>
+    window.localStorage.getItem("lootbox:left-panel-collapsed") === "true",
+  );
   const [rightPanelWidth, setRightPanelWidth] = useState(() =>
     savedPanelWidth(
       "lootbox:right-panel-width",
@@ -406,6 +509,9 @@ function App() {
       260,
       480,
     ),
+  );
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(() =>
+    window.localStorage.getItem("lootbox:right-panel-collapsed") === "true",
   );
 
   const query = useMemo<AssetQuery>(() => {
@@ -534,8 +640,8 @@ function App() {
     }),
     [selectedIds],
   );
-  const layoutLeftPanelWidth = Math.min(leftPanelWidth, windowWidth < 1100 ? 200 : 320);
-  const layoutRightPanelWidth = Math.min(
+  const layoutLeftPanelWidth = leftPanelCollapsed ? 0 : Math.min(leftPanelWidth, windowWidth < 1100 ? 200 : 320);
+  const layoutRightPanelWidth = rightPanelCollapsed ? 0 : Math.min(
     rightPanelWidth,
     Math.max(260, windowWidth - layoutLeftPanelWidth - 480),
   );
@@ -595,9 +701,18 @@ function App() {
   const activeFilters = useMemo(() => {
     const labels: Record<keyof typeof filters, (value: string) => string> = {
       type: (value) => `Type: ${typeLabels[value as AssetType] ?? value}`,
-      extension: (value) => `Format .${value}`,
-      mapRole: (value) => `Map ${value.replaceAll("_", " ")}`,
-      tag: (value) => `Tag ${value}`,
+      extension: (value) => {
+        const parts = value.split(",").map((s) => `.${s.trim()}`).filter((s) => s.length > 1);
+        return parts.length > 2 ? `Format: ${parts.length} formats` : `Format ${parts.join(", ")}`;
+      },
+      mapRole: (value) => {
+        const parts = value.split(",").map((s) => s.trim().replaceAll("_", " ")).filter(Boolean);
+        return parts.length > 2 ? `Maps: ${parts.length} roles` : `Map ${parts.join(", ")}`;
+      },
+      tag: (value) => {
+        const parts = value.split(",").map((s) => s.trim()).filter(Boolean);
+        return parts.length > 2 ? `Tags: ${parts.length} tags` : `Tag ${parts.join(", ")}`;
+      },
       minWidth: (value) => `${value} × ${value}+`,
       minConfidence: (value) => `Confidence ≤ ${value}%`,
       status: () => "Missing files",
@@ -607,6 +722,31 @@ function App() {
       .filter(([key, value]) => Boolean(value) && key !== "type")
       .map(([key, value]) => ({ key, label: labels[key](value) }));
   }, [activeProject?.name, filters]);
+
+  const dynamicTypeCounts = useMemo(() => {
+    const isScoped = selection.kind !== "all" || debouncedSearch.trim().length > 0 || Boolean(filters.extension || filters.mapRole || filters.tag);
+    if (!isScoped) {
+      return {
+        total: snapshot.totalAssets,
+        counts: new Map(snapshot.typeCounts.map((tc) => [tc.assetType, tc.count])),
+        isScoped: false,
+      };
+    }
+    const counts = new Map<string, number>();
+    for (const a of assets) {
+      counts.set(a.assetType, (counts.get(a.assetType) ?? 0) + 1);
+    }
+    const totalCount = selection.kind === "pack" && selectedPack
+      ? selectedPack.assetCount
+      : selection.kind === "project" && selectedProject
+      ? selectedProject.assetCount
+      : assetTotal;
+    return {
+      total: totalCount,
+      counts,
+      isScoped: true,
+    };
+  }, [selection.kind, debouncedSearch, filters.extension, filters.mapRole, filters.tag, snapshot.totalAssets, snapshot.typeCounts, assets, selectedPack, selectedProject, assetTotal]);
 
   const selectionSummary = useMemo(() => {
     if (selectedIds.size === 0) return "";
@@ -663,8 +803,16 @@ function App() {
   }, [leftPanelWidth]);
 
   useEffect(() => {
+    window.localStorage.setItem("lootbox:left-panel-collapsed", String(leftPanelCollapsed));
+  }, [leftPanelCollapsed]);
+
+  useEffect(() => {
     window.localStorage.setItem("lootbox:right-panel-width", String(rightPanelWidth));
   }, [rightPanelWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem("lootbox:right-panel-collapsed", String(rightPanelCollapsed));
+  }, [rightPanelCollapsed]);
 
   useEffect(() => {
     window.localStorage.setItem("lootbox:asset-sort", sort);
@@ -804,11 +952,20 @@ function App() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target)) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b" && !event.altKey) {
+        event.preventDefault();
+        setLeftPanelCollapsed((current) => !current);
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && (event.key.toLowerCase() === "i" || (event.altKey && event.key.toLowerCase() === "b"))) {
+        event.preventDefault();
+        setRightPanelCollapsed((current) => !current);
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
         if (event.shiftKey) {
           event.preventDefault();
-          setFilterDraft(filters);
-          setFiltersOpen(true);
+          setFiltersOpen((open) => !open);
           return;
         }
         event.preventDefault();
@@ -1725,63 +1882,65 @@ function App() {
         gridTemplateColumns: `${layoutLeftPanelWidth}px 4px minmax(0, 1fr) 4px ${layoutRightPanelWidth}px`,
       }}
     >
-      <Sidebar
-        snapshot={snapshot}
-        selection={selection}
-        creatingCollection={creatingCollection}
-        activeProjectId={activeProjectId}
-        activeProjectAttention={activeProjectAttention}
-        savedViews={savedViews}
-        activeSavedViewId={activeSavedViewId}
-        onSelect={(next) => {
-          setSelection(next);
-          setActiveSavedViewId(null);
-          clearAssetSelection();
-        }}
-        onActivateProject={activateProject}
-        onRelocateProject={(project) => void relocateGodotProject(project)}
-        onOpenSavedView={openSavedView}
-        onDeleteSavedView={(view) => {
-          setSavedViews((current) => current.filter((candidate) => candidate.id !== view.id));
-          if (activeSavedViewId === view.id) setActiveSavedViewId(null);
-          setMetadataUndo({
-            label: `Undo deleting “${view.name}”`,
-            run: async () => setSavedViews((current) => current.some((candidate) => candidate.id === view.id) ? current : [...current, view]),
-          });
-          setNotice(`${view.name} deleted`);
-        }}
-        onImport={() => void importPack()}
-        onStartCollection={() => {
-          setAddSelectionToNewCollection(false);
-          setCreatingCollection(true);
-        }}
-        onRenamePack={startRenamePack}
-        onRescanPack={(pack) => void rescanPack(pack)}
-        onOpenPack={(pack) =>
-          void api.openAsset(pack.rootPath).catch((caught) => reportError(caught, "open-pack"))
-        }
-        onRelocatePack={(pack) => void relocatePack(pack)}
-        onForgetPack={requestForgetPack}
-        onViewRemoved={(pack) => {
-          setSelection({ kind: "removed", packId: pack.id });
-          clearAssetSelection();
-        }}
-        onViewMissing={(pack) => {
-          setSelection({ kind: "missing", packId: pack.id });
-          clearAssetSelection();
-        }}
-        onPurgeMissing={setConfirmPurge}
-        onAddProject={() => void addGodotProject()}
-        onOpenProject={(project) =>
-          void api.openAsset(project.rootPath).catch((caught) => reportError(caught, "open-project"))
-        }
-        onForgetProject={setConfirmProjectRemoval}
-        onSettings={() => {
-          setSettingsMessage("");
-          setSettingsOpen(true);
-        }}
-        onShortcuts={() => setShortcutsOpen(true)}
-      />
+      {!leftPanelCollapsed && (
+        <Sidebar
+          snapshot={snapshot}
+          selection={selection}
+          creatingCollection={creatingCollection}
+          activeProjectId={activeProjectId}
+          activeProjectAttention={activeProjectAttention}
+          savedViews={savedViews}
+          activeSavedViewId={activeSavedViewId}
+          onSelect={(next) => {
+            setSelection(next);
+            setActiveSavedViewId(null);
+            clearAssetSelection();
+          }}
+          onActivateProject={activateProject}
+          onRelocateProject={(project) => void relocateGodotProject(project)}
+          onOpenSavedView={openSavedView}
+          onDeleteSavedView={(view) => {
+            setSavedViews((current) => current.filter((candidate) => candidate.id !== view.id));
+            if (activeSavedViewId === view.id) setActiveSavedViewId(null);
+            setMetadataUndo({
+              label: `Undo deleting “${view.name}”`,
+              run: async () => setSavedViews((current) => current.some((candidate) => candidate.id === view.id) ? current : [...current, view]),
+            });
+            setNotice(`${view.name} deleted`);
+          }}
+          onImport={() => void importPack()}
+          onStartCollection={() => {
+            setAddSelectionToNewCollection(false);
+            setCreatingCollection(true);
+          }}
+          onRenamePack={startRenamePack}
+          onRescanPack={(pack) => void rescanPack(pack)}
+          onOpenPack={(pack) =>
+            void api.openAsset(pack.rootPath).catch((caught) => reportError(caught, "open-pack"))
+          }
+          onRelocatePack={(pack) => void relocatePack(pack)}
+          onForgetPack={requestForgetPack}
+          onViewRemoved={(pack) => {
+            setSelection({ kind: "removed", packId: pack.id });
+            clearAssetSelection();
+          }}
+          onViewMissing={(pack) => {
+            setSelection({ kind: "missing", packId: pack.id });
+            clearAssetSelection();
+          }}
+          onPurgeMissing={setConfirmPurge}
+          onAddProject={() => void addGodotProject()}
+          onOpenProject={(project) =>
+            void api.openAsset(project.rootPath).catch((caught) => reportError(caught, "open-project"))
+          }
+          onForgetProject={setConfirmProjectRemoval}
+          onSettings={() => {
+            setSettingsMessage("");
+            setSettingsOpen(true);
+          }}
+          onShortcuts={() => setShortcutsOpen(true)}
+        />
+      )}
 
       <div
         role="separator"
@@ -1792,44 +1951,164 @@ function App() {
         aria-valuenow={Math.round(layoutLeftPanelWidth)}
         aria-valuetext={`${Math.round(layoutLeftPanelWidth)} pixels`}
         tabIndex={0}
-        className="group relative z-20 cursor-col-resize outline-none"
+        className="group relative z-20 flex w-1.5 shrink-0 cursor-col-resize items-center justify-center outline-none bg-border/40 hover:bg-primary/50 transition-colors select-none"
         onPointerDown={(event) => startPanelResize("left", event)}
         onKeyDown={(event) => resizePanelWithKeyboard("left", event)}
       >
-        <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-primary/60 group-focus-visible:bg-primary" />
+        <button
+          type="button"
+          aria-label={leftPanelCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+          title={leftPanelCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+          onClick={(e) => {
+            e.stopPropagation();
+            setLeftPanelCollapsed((c) => !c);
+          }}
+          className="absolute z-30 flex size-5.5 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-xs transition-transform hover:scale-115 hover:text-foreground cursor-pointer"
+        >
+          {leftPanelCollapsed ? <ChevronRight className="size-3.5" /> : <ChevronLeft className="size-3.5" />}
+        </button>
       </div>
 
       <main className="flex min-w-0 flex-col overflow-hidden">
         <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-4">
-          <AssetSearch
-            inputRef={searchRef}
-            value={searchValue}
-            onValueChange={(value) => {
-              setSearchValue(value);
-              setActiveSavedViewId(null);
-            }}
-            onQueryChange={setDebouncedSearch}
-          />
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {leftPanelCollapsed && (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 gap-1.5 rounded-md px-2.5 text-xs font-medium shrink-0 max-w-48 truncate"
+                      aria-label="Switch workspace"
+                      title={activeProject ? `Target: ${activeProject.name}` : "Target: Global Library"}
+                    >
+                      {activeProject ? <Gamepad2 className="size-3.5 text-primary shrink-0" /> : <HardDrive className="size-3.5 text-muted-foreground shrink-0" />}
+                      <span className="truncate">{activeProject ? activeProject.name : "Global Library"}</span>
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent align="start" className="w-56 rounded-md">
+                  <DropdownMenuItem
+                    className="gap-2 text-xs font-medium cursor-pointer"
+                    onClick={() => {
+                      activateProject(null);
+                      setSelection({ kind: "all" });
+                      setActiveSavedViewId(null);
+                      clearAssetSelection();
+                    }}
+                  >
+                    <HardDrive className="size-3.5" />
+                    <span className="flex-1">Global Library</span>
+                    {!activeProject && <Check className="size-3.5 text-primary" />}
+                  </DropdownMenuItem>
+                  {snapshot.projects.length > 0 && <DropdownMenuSeparator />}
+                  {snapshot.projects.map((project) => (
+                    <DropdownMenuItem
+                      key={project.id}
+                      className="gap-2 text-xs cursor-pointer"
+                      onClick={() => activateProject(project)}
+                    >
+                      <Gamepad2 className="size-3.5" />
+                      <span className="flex-1 truncate">{project.name}</span>
+                      {activeProject?.id === project.id && <Check className="size-3.5 text-primary" />}
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="gap-2 text-xs cursor-pointer"
+                    onClick={() => void addGodotProject()}
+                  >
+                    <Plus className="size-3.5" />
+                    <span>Add Godot Project...</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+
+            <AssetSearch
+              inputRef={searchRef}
+              value={searchValue}
+              onValueChange={(value) => {
+                setSearchValue(value);
+                setActiveSavedViewId(null);
+              }}
+              onQueryChange={setDebouncedSearch}
+            />
+          </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant={activeFilters.length > 0 ? "secondary" : "outline"}
-              size="sm"
-              className="rounded-md"
-              onClick={() => {
-                setFilterDraft(filters);
-                setFiltersOpen(true);
-              }}
-              aria-label={activeFilters.length > 0 ? `Filter assets, ${activeFilters.length} active` : "Filter assets"}
-              title={activeFilters.length > 0 ? activeFilters.map((filter) => filter.label).join(" · ") : "Filters"}
-            >
-              <SlidersHorizontal />
-              <span className="max-[1150px]:hidden">Filters</span>
-              {activeFilters.length > 0 && (
-                <span className="font-mono text-[11px] text-primary max-[1150px]:hidden">{activeFilters.length}</span>
-              )}
-            </Button>
+            <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
+              <PopoverTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant={activeFilters.length > 0 || Boolean(filters.type) ? "secondary" : "outline"}
+                    size="sm"
+                    className="rounded-md"
+                    aria-label={activeFilters.length > 0 || Boolean(filters.type) ? `Filter assets, ${activeFilters.length + (filters.type ? 1 : 0)} active` : "Filter assets"}
+                    title={activeFilters.length > 0 || Boolean(filters.type) ? [...(filters.type ? [`Type: ${typeLabels[filters.type as AssetType] ?? filters.type}`] : []), ...activeFilters.map((f) => f.label)].join(" · ") : "Filters (Ctrl+Shift+F)"}
+                  >
+                    <SlidersHorizontal />
+                    <span className="max-[1150px]:hidden">Filters</span>
+                    {(activeFilters.length > 0 || Boolean(filters.type)) && (
+                      <span className="font-mono text-[11px] text-primary max-[1150px]:hidden">{activeFilters.length + (filters.type ? 1 : 0)}</span>
+                    )}
+                  </Button>
+                }
+              />
+              <PopoverContent align="end" side="bottom" sideOffset={8} className="w-80 gap-3 p-3 text-xs">
+                <div className="flex items-center justify-between border-b pb-2">
+                  <PopoverHeading className="text-xs font-semibold text-foreground">Filter assets</PopoverHeading>
+                  {(activeFilters.length > 0 || Boolean(filters.type)) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilters({ ...clearedFilters });
+                        setActiveSavedViewId(null);
+                      }}
+                      className="text-[11px] text-muted-foreground hover:text-foreground underline cursor-pointer"
+                    >
+                      Reset all
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2.5 pt-1">
+                  <FilterSelect
+                    className="col-span-2"
+                    label="Asset type"
+                    value={filters.type ?? ""}
+                    placeholder="All types"
+                    options={snapshot.typeCounts.map(({ assetType }) => ({
+                      value: assetType,
+                      label: typeLabels[assetType] ?? assetType,
+                    }))}
+                    onValueChange={(value) => {
+                      setFilters((current) => ({ ...current, type: value }));
+                      setActiveSavedViewId(null);
+                    }}
+                  />
+                  <MultiFilterSelect label="Format" value={filters.extension} placeholder="All formats" options={filterOptions.extensions.map((value) => ({ value, label: `.${value}` }))} onValueChange={(value) => { setFilters((current) => ({ ...current, extension: value })); setActiveSavedViewId(null); }} />
+                  <MultiFilterSelect label="Map role" value={filters.mapRole} placeholder="All map roles" options={filterOptions.mapRoles.map((value) => ({ value, label: value.replaceAll("_", " ") }))} onValueChange={(value) => { setFilters((current) => ({ ...current, mapRole: value })); setActiveSavedViewId(null); }} />
+                  <MultiFilterSelect label="Tag" value={filters.tag} placeholder="All tags" options={filterOptions.tags.map((value) => ({ value, label: value }))} onValueChange={(value) => { setFilters((current) => ({ ...current, tag: value })); setActiveSavedViewId(null); }} />
+                  <FilterSelect label="Minimum resolution" value={filters.minWidth} placeholder="Any resolution" options={[256, 512, 1024, 2048, 4096, 8192].map((value) => ({ value: String(value), label: `${value} × ${value}+` }))} onValueChange={(value) => { setFilters((current) => ({ ...current, minWidth: value })); setActiveSavedViewId(null); }} />
+                  <FilterSelect className="col-span-2" label="Classification confidence" value={filters.minConfidence} placeholder="Any confidence" options={[{ value: "80", label: "Needs review · 80% or lower" }, { value: "60", label: "Uncertain · 60% or lower" }]} onValueChange={(value) => { setFilters((current) => ({ ...current, minConfidence: value })); setActiveSavedViewId(null); }} />
+                  <FilterSelect className="col-span-2" label="File status" value={filters.status} placeholder="Available files" options={[{ value: "missing", label: "Missing files" }]} onValueChange={(value) => { setFilters((current) => ({ ...current, status: value })); setActiveSavedViewId(null); }} />
+                  <FilterSelect
+                    className="col-span-2"
+                    label="Project usage"
+                    value={filters.projectUsage}
+                    placeholder="Any project usage"
+                    options={[
+                      ...(activeProject ? [{ value: "active", label: `Used in ${activeProject.name}` }] : []),
+                      { value: "unused", label: "Not used by any project" },
+                    ]}
+                    onValueChange={(value) => { setFilters((current) => ({ ...current, projectUsage: value })); setActiveSavedViewId(null); }}
+                  />
+                </div>
+              </PopoverContent>
+            </Popover>
             {selection.kind !== "health" && (
               <Button
                 type="button"
@@ -1944,7 +2223,7 @@ function App() {
         )}
 
         {selection.kind !== "health" && (
-          <div className="quiet-scrollbar flex h-9 shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-muted/10 px-4 text-xs select-none" aria-label="Asset type quick filters">
+          <div className="quiet-scrollbar flex h-9 shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-muted/10 px-4 text-xs select-none" aria-label="Asset filters">
             <button
               type="button"
               onClick={() => {
@@ -1960,7 +2239,7 @@ function App() {
             >
               <span>All types</span>
               <span className={cn("font-mono text-[11px] tabular-nums", !filters.type ? "text-primary-foreground/85" : "text-muted-foreground")}>
-                {snapshot.totalAssets > 9999 ? "9k+" : snapshot.totalAssets.toLocaleString()}
+                {dynamicTypeCounts.total > 9999 ? "9k+" : dynamicTypeCounts.total.toLocaleString()}
               </span>
             </button>
 
@@ -1968,7 +2247,8 @@ function App() {
               const item = typeMetadata[assetType];
               const Icon = item.icon;
               const isActive = filters.type === assetType;
-              if (count === 0 && !isActive) return null;
+              const displayCount = dynamicTypeCounts.isScoped ? (dynamicTypeCounts.counts.get(assetType) ?? 0) : count;
+              if (displayCount === 0 && !isActive) return null;
               return (
                 <button
                   key={assetType}
@@ -1987,38 +2267,46 @@ function App() {
                   <Icon className="size-3" />
                   <span>{item.label}</span>
                   <span className={cn("font-mono text-[11px] tabular-nums", isActive ? "text-primary-foreground/85" : "text-muted-foreground")}>
-                    {count > 9999 ? "9k+" : count.toLocaleString()}
+                    {displayCount > 9999 ? "9k+" : displayCount.toLocaleString()}
                   </span>
                 </button>
               );
             })}
-          </div>
-        )}
 
-        {selection.kind !== "health" && activeFilters.length > 0 && (
-          <div className="quiet-scrollbar flex h-9 shrink-0 items-center gap-1.5 overflow-x-auto border-b px-4" aria-label="Active filters">
-            {activeFilters.map((filter) => (
-              <Button
-                key={filter.key}
-                type="button"
-                variant="secondary"
-                size="xs"
-                className="shrink-0 rounded-full px-2 text-[11px]"
-                onClick={() => {
-                  setFilters((current) => ({ ...current, [filter.key]: "" }));
-                  setActiveSavedViewId(null);
-                }}
-                aria-label={`Remove ${filter.label} filter`}
-              >
-                {filter.label}<X className="size-3" />
-              </Button>
-            ))}
-            <Button type="button" variant="ghost" size="xs" className="shrink-0 text-[11px] text-muted-foreground" onClick={() => {
-              setFilters({ ...clearedFilters });
-              setActiveSavedViewId(null);
-            }}>
-              Clear all
-            </Button>
+            {activeFilters.length > 0 && (
+              <>
+                <div className="h-3.5 w-px shrink-0 bg-border/80 mx-0.5" role="separator" />
+                {activeFilters.map((filter) => (
+                  <Button
+                    key={filter.key}
+                    type="button"
+                    variant="secondary"
+                    size="xs"
+                    className="h-6 shrink-0 rounded-full px-2 text-[11px] gap-1"
+                    onClick={() => {
+                      setFilters((current) => ({ ...current, [filter.key]: "" }));
+                      setActiveSavedViewId(null);
+                    }}
+                    aria-label={`Remove ${filter.label} filter`}
+                  >
+                    <span>{filter.label}</span>
+                    <X className="size-3" />
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="h-6 shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    setFilters({ ...clearedFilters });
+                    setActiveSavedViewId(null);
+                  }}
+                >
+                  Clear all
+                </Button>
+              </>
+            )}
           </div>
         )}
 
@@ -2276,7 +2564,7 @@ function App() {
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
                   >
-                    {rowAssets.map((asset, columnIndex) => {
+                    {rowAssets.filter(Boolean).map((asset, columnIndex) => {
                       const optionIndex = view === "grid"
                         ? virtualRow.index * gridColumns + columnIndex
                         : virtualRow.index;
@@ -2343,114 +2631,127 @@ function App() {
         aria-valuenow={Math.round(layoutRightPanelWidth)}
         aria-valuetext={`${Math.round(layoutRightPanelWidth)} pixels`}
         tabIndex={0}
-        className="group relative z-20 cursor-col-resize outline-none"
+        className="group relative z-20 flex w-1.5 shrink-0 cursor-col-resize items-center justify-center outline-none bg-border/40 hover:bg-primary/50 transition-colors select-none"
         onPointerDown={(event) => startPanelResize("right", event)}
         onKeyDown={(event) => resizePanelWithKeyboard("right", event)}
       >
-        <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-primary/60 group-focus-visible:bg-primary" />
+        <button
+          type="button"
+          aria-label={rightPanelCollapsed ? "Expand inspector (Ctrl+I)" : "Collapse inspector (Ctrl+I)"}
+          title={rightPanelCollapsed ? "Expand inspector (Ctrl+I)" : "Collapse inspector (Ctrl+I)"}
+          onClick={(e) => {
+            e.stopPropagation();
+            setRightPanelCollapsed((c) => !c);
+          }}
+          className="absolute z-30 flex size-5.5 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-xs transition-transform hover:scale-115 hover:text-foreground cursor-pointer"
+        >
+          {rightPanelCollapsed ? <ChevronLeft className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </button>
       </div>
 
-      {selectedAsset ? (
-        <DetailPanel
-          asset={selectedAsset}
-          selectedCount={Math.max(selectedIds.size, 1)}
-          selectedAssets={selectedAssets}
-          tagInputRef={tagInputRef}
-          busy={editingSelection}
-          collections={snapshot.collections}
-          onAddTag={async (name) => {
-            let changed: number[] = [];
-            if (await mutateSelected(async () => { changed = await api.addTags([...selectedIds], name); }) && changed.length > 0) {
-              setMetadataUndo({ label: `Undo adding “${name}”`, run: async () => { await api.removeTags(changed, name); await refresh(); } });
-              setNotice(`Added “${name}” to ${changed.length.toLocaleString()} assets`);
-            }
-          }}
-          onRemoveTag={async (name) => {
-            let changed: number[] = [];
-            if (await mutateSelected(async () => { changed = await api.removeTags([...selectedIds], name); }) && changed.length > 0) {
-              setMetadataUndo({ label: `Undo removing “${name}”`, run: async () => { await api.addTags(changed, name); await refresh(); } });
-              setNotice(`Removed “${name}” from ${changed.length.toLocaleString()} assets`);
-            }
-          }}
-          onMembership={async (collectionId, included) => {
-            const collection = snapshot.collections.find((item) => item.id === collectionId);
-            let changed: number[] = [];
-            if (await mutateSelected(async () => { changed = await api.setCollectionMemberships([...selectedIds], collectionId, included); }) && changed.length > 0) {
-              setMetadataUndo({ label: `Undo collection change`, run: async () => { await api.setCollectionMemberships(changed, collectionId, !included); await refresh(); } });
-              setNotice(`${included ? "Added to" : "Removed from"} ${collection?.name ?? "collection"} · ${changed.length.toLocaleString()} assets`);
-            }
-          }}
-          onClassification={(assetType, mapRole) => {
-            return guardedBulkMutation(
-              `Change classification for ${selectedIds.size.toLocaleString()} assets?`,
-              `This applies the new classification to every selected asset. Source files stay untouched.`,
+      {!rightPanelCollapsed && (
+        selectedAsset ? (
+          <DetailPanel
+            asset={selectedAsset}
+            selectedCount={Math.max(selectedIds.size, 1)}
+            selectedAssets={selectedAssets}
+            tagInputRef={tagInputRef}
+            busy={editingSelection}
+            collections={snapshot.collections}
+            onAddTag={async (name) => {
+              let changed: number[] = [];
+              if (await mutateSelected(async () => { changed = await api.addTags([...selectedIds], name); }) && changed.length > 0) {
+                setMetadataUndo({ label: `Undo adding “${name}”`, run: async () => { await api.removeTags(changed, name); await refresh(); } });
+                setNotice(`Added “${name}” to ${changed.length.toLocaleString()} assets`);
+              }
+            }}
+            onRemoveTag={async (name) => {
+              let changed: number[] = [];
+              if (await mutateSelected(async () => { changed = await api.removeTags([...selectedIds], name); }) && changed.length > 0) {
+                setMetadataUndo({ label: `Undo removing “${name}”`, run: async () => { await api.addTags(changed, name); await refresh(); } });
+                setNotice(`Removed “${name}” from ${changed.length.toLocaleString()} assets`);
+              }
+            }}
+            onMembership={async (collectionId, included) => {
+              const collection = snapshot.collections.find((item) => item.id === collectionId);
+              let changed: number[] = [];
+              if (await mutateSelected(async () => { changed = await api.setCollectionMemberships([...selectedIds], collectionId, included); }) && changed.length > 0) {
+                setMetadataUndo({ label: `Undo collection change`, run: async () => { await api.setCollectionMemberships(changed, collectionId, !included); await refresh(); } });
+                setNotice(`${included ? "Added to" : "Removed from"} ${collection?.name ?? "collection"} · ${changed.length.toLocaleString()} assets`);
+              }
+            }}
+            onClassification={(assetType, mapRole) => {
+              return guardedBulkMutation(
+                `Change classification for ${selectedIds.size.toLocaleString()} assets?`,
+                `This applies the new classification to every selected asset. Source files stay untouched.`,
+                async () => {
+                  const snapshots = await api.setClassificationOverride([...selectedIds], assetType, mapRole);
+                  if (snapshots.length > 0) {
+                    setMetadataUndo({ label: "Undo classification change", run: async () => {
+                      await api.restoreClassificationOverrides(snapshots);
+                      await refresh();
+                    } });
+                    setNotice(`Classification updated · ${snapshots.length.toLocaleString()} assets`);
+                  }
+                },
+              );
+            }}
+            onGroup={(action) => guardedBulkMutation(
+              `${action === "merge" ? "Group" : "Separate"} ${selectedIds.size.toLocaleString()} assets?`,
+              `${action === "merge" ? "Grouping" : "Separating"} changes how all selected files are presented and exported. Source files stay untouched.`,
               async () => {
-                const snapshots = await api.setClassificationOverride([...selectedIds], assetType, mapRole);
+                const snapshots = await api.setClassificationOverride([...selectedIds], undefined, undefined, action);
                 if (snapshots.length > 0) {
-                  setMetadataUndo({ label: "Undo classification change", run: async () => {
+                  setMetadataUndo({ label: `Undo ${action === "merge" ? "grouping" : "separation"}`, run: async () => {
                     await api.restoreClassificationOverrides(snapshots);
                     await refresh();
                   } });
-                  setNotice(`Classification updated · ${snapshots.length.toLocaleString()} assets`);
+                  setNotice(`${action === "merge" ? "Grouped" : "Separated"} ${snapshots.length.toLocaleString()} assets`);
                 }
               },
-            );
-          }}
-          onGroup={(action) => guardedBulkMutation(
-            `${action === "merge" ? "Group" : "Separate"} ${selectedIds.size.toLocaleString()} assets?`,
-            `${action === "merge" ? "Grouping" : "Separating"} changes how all selected files are presented and exported. Source files stay untouched.`,
-            async () => {
-              const snapshots = await api.setClassificationOverride([...selectedIds], undefined, undefined, action);
-              if (snapshots.length > 0) {
-                setMetadataUndo({ label: `Undo ${action === "merge" ? "grouping" : "separation"}`, run: async () => {
+            )}
+            onResetClassification={() => mutateSelected(async () => {
+              const snapshots = await api.resetClassificationOverride([...selectedIds]);
+              if (snapshots.some((snapshot) => snapshot.existed)) {
+                setMetadataUndo({ label: "Undo automatic classification", run: async () => {
                   await api.restoreClassificationOverrides(snapshots);
                   await refresh();
                 } });
-                setNotice(`${action === "merge" ? "Grouped" : "Separated"} ${snapshots.length.toLocaleString()} assets`);
+                setNotice(`Automatic classification restored · ${snapshots.length.toLocaleString()} assets`);
               }
-            },
-          )}
-          onResetClassification={() => mutateSelected(async () => {
-            const snapshots = await api.resetClassificationOverride([...selectedIds]);
-            if (snapshots.some((snapshot) => snapshot.existed)) {
-              setMetadataUndo({ label: "Undo automatic classification", run: async () => {
-                await api.restoreClassificationOverrides(snapshots);
-                await refresh();
-              } });
-              setNotice(`Automatic classification restored · ${snapshots.length.toLocaleString()} assets`);
+            }).then(() => undefined)}
+            onAddCollection={() => {
+              setAddSelectionToNewCollection(true);
+              setCreatingCollection(true);
+            }}
+            onCopyPath={copyAssetPath}
+            onOpen={() =>
+              void api
+                .openAsset(selectedAsset.absolutePath)
+                .catch((caught) => reportError(caught, "open-asset"))
             }
-          }).then(() => undefined)}
-          onAddCollection={() => {
-            setAddSelectionToNewCollection(true);
-            setCreatingCollection(true);
-          }}
-          onCopyPath={copyAssetPath}
-          onOpen={() =>
-            void api
-              .openAsset(selectedAsset.absolutePath)
-              .catch((caught) => reportError(caught, "open-asset"))
-          }
-          onOpenVariant={(path) =>
-            void api.openAsset(path).catch((caught) => reportError(caught, "open-asset"))
-          }
-          onRevealPath={(path) =>
-            void api
-              .revealAsset(path)
-              .catch((caught) => reportError(caught, "reveal-asset"))
-          }
-        />
-      ) : (
-        <aside className="min-w-0 border-l bg-background">
-          <header className="flex h-[58px] items-center border-b px-4">
-            <h2 className="text-xs font-semibold">Details</h2>
-          </header>
-          <div className="flex h-[calc(100%-58px)] items-center justify-center px-6 text-center">
-            <div>
-              <p className="text-xs font-medium">No asset selected</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">Select an asset, or use the arrow keys to browse.</p>
+            onOpenVariant={(path) =>
+              void api.openAsset(path).catch((caught) => reportError(caught, "open-asset"))
+            }
+            onRevealPath={(path) =>
+              void api
+                .revealAsset(path)
+                .catch((caught) => reportError(caught, "reveal-asset"))
+            }
+          />
+        ) : (
+          <aside className="min-w-0 border-l bg-background">
+            <header className="flex h-[58px] items-center border-b px-4">
+              <h2 className="text-xs font-semibold">Details</h2>
+            </header>
+            <div className="flex h-[calc(100%-58px)] items-center justify-center px-6 text-center">
+              <div>
+                <p className="text-xs font-medium">No asset selected</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">Select an asset, or use the arrow keys to browse.</p>
+              </div>
             </div>
-          </div>
-        </aside>
+          </aside>
+        )
       )}
 
       {(error || notice || godotExportNotice) && (
@@ -2571,7 +2872,7 @@ function App() {
                     </fieldset>
                   )}
                   <dl className="grid grid-cols-[112px_minmax(0,1fr)] gap-y-2 rounded-md border bg-muted/10 p-3 text-[11px]">
-                    <dt className="text-muted-foreground">Project</dt><dd className="min-w-0" title={godotExport.project.rootPath}><span className="block truncate">{godotExport.project.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{godotExport.project.rootPath}</span></dd>
+                    <dt className="text-muted-foreground">Project</dt><dd className="min-w-0" title={collapseHomePath(godotExport.project.rootPath)}><span className="block truncate">{godotExport.project.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{collapseHomePath(godotExport.project.rootPath)}</span></dd>
                     <dt className="text-muted-foreground">Selected</dt><dd>{godotExport.preview.selected.toLocaleString()} assets</dd>
                     <dt className="text-muted-foreground">Grouped files</dt><dd>{godotExport.preview.grouped.toLocaleString()} related maps or formats</dd>
                     <dt className="text-muted-foreground">Dependencies</dt><dd>{godotExport.preview.dependencies.toLocaleString()} referenced files</dd>
@@ -2863,54 +3164,7 @@ function App() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <Dialog open={filtersOpen} onOpenChange={(open) => {
-        setFiltersOpen(open);
-        if (open) setFilterDraft(filters);
-      }}>
-        <DialogContent className="gap-4 sm:max-w-md">
-          <DialogHeader className="gap-1">
-            <DialogTitle className="text-sm">Filter assets</DialogTitle>
-          </DialogHeader>
-          <div className="grid grid-cols-2 gap-3">
-            <FilterSelect
-              className="col-span-2"
-              label="Asset type"
-              value={filterDraft.type ?? ""}
-              placeholder="All types"
-              options={snapshot.typeCounts.map(({ assetType }) => ({
-                value: assetType,
-                label: typeLabels[assetType] ?? assetType,
-              }))}
-              onValueChange={(value) => setFilterDraft((current) => ({ ...current, type: value }))}
-            />
-            <FilterSelect label="Format" value={filterDraft.extension} placeholder="All formats" options={filterOptions.extensions.map((value) => ({ value, label: `.${value}` }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, extension: value }))} />
-            <FilterSelect label="Map role" value={filterDraft.mapRole} placeholder="All map roles" options={filterOptions.mapRoles.map((value) => ({ value, label: value.replaceAll("_", " ") }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, mapRole: value }))} />
-            <FilterSelect label="Tag" value={filterDraft.tag} placeholder="All tags" options={filterOptions.tags.map((value) => ({ value, label: value }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, tag: value }))} />
-            <FilterSelect label="Minimum resolution" value={filterDraft.minWidth} placeholder="Any resolution" options={[256, 512, 1024, 2048, 4096, 8192].map((value) => ({ value: String(value), label: `${value} × ${value}+` }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, minWidth: value }))} />
-            <FilterSelect className="col-span-2" label="Classification confidence" value={filterDraft.minConfidence} placeholder="Any confidence" options={[{ value: "80", label: "Needs review · 80% or lower" }, { value: "60", label: "Uncertain · 60% or lower" }]} onValueChange={(value) => setFilterDraft((current) => ({ ...current, minConfidence: value }))} />
-            <FilterSelect className="col-span-2" label="File status" value={filterDraft.status} placeholder="Available files" options={[{ value: "missing", label: "Missing files" }]} onValueChange={(value) => setFilterDraft((current) => ({ ...current, status: value }))} />
-            <FilterSelect
-              className="col-span-2"
-              label="Project usage"
-              value={filterDraft.projectUsage}
-              placeholder="Any project usage"
-              options={[
-                ...(activeProject ? [{ value: "active", label: `Used in ${activeProject.name}` }] : []),
-                { value: "unused", label: "Not used by any project" },
-              ]}
-              onValueChange={(value) => setFilterDraft((current) => ({ ...current, projectUsage: value }))}
-            />
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setFilterDraft({ ...clearedFilters })}>Reset</Button>
-            <Button type="button" size="sm" onClick={() => {
-              setFilters(filterDraft);
-              setActiveSavedViewId(null);
-              setFiltersOpen(false);
-            }}>Apply filters</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
 
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="gap-4 sm:max-w-md">
@@ -2921,6 +3175,8 @@ function App() {
             {[
               ["Ctrl F", "Search"],
               ["Ctrl Shift F", "Filters"],
+              ["Ctrl B", "Toggle sidebar"],
+              ["Ctrl I", "Toggle inspector"],
               ["Ctrl A", "Select all results"],
               ["G / L", "Grid / list view"],
               ["Ctrl E", "Export to active project"],

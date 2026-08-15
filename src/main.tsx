@@ -6,6 +6,13 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { installNativeShellBehavior } from "./nativeShell";
 import "./styles.css";
 
+if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
+  (window as unknown as { __TAURI_INTERNALS__: Record<string, unknown> }).__TAURI_INTERNALS__ = {
+    convertFileSrc: (filePath: string, protocol = "asset") => `${protocol}://${filePath}`,
+    plugins: {},
+  };
+}
+
 installNativeShellBehavior();
 
 const queryClient = new QueryClient({

@@ -8,6 +8,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { collapseHomePath } from "@/lib/utils";
 import type { LibrarySnapshot, ProjectStatus } from "../types";
 
 interface Props {
@@ -105,7 +106,7 @@ export function LibraryHealth({
             <h3 className="mb-2 text-xs font-semibold">Reconnect packs</h3>
             <div className="overflow-hidden rounded-md border">
               {unavailablePacks.map((pack) => (
-                <HealthRow key={pack.id} icon={FolderCog} title={pack.name} detail={pack.rootPath} action="Locate" onAction={() => onRelocatePack(pack.id)} attention />
+                <HealthRow key={pack.id} icon={FolderCog} title={pack.name} detail={collapseHomePath(pack.rootPath)} action="Locate" onAction={() => onRelocatePack(pack.id)} attention />
               ))}
             </div>
           </section>
@@ -116,7 +117,7 @@ export function LibraryHealth({
             <h3 className="mb-2 text-xs font-semibold">Reconnect projects</h3>
             <div className="overflow-hidden rounded-md border">
               {unavailableProjects.map((project) => (
-                <HealthRow key={project.id} icon={Gamepad2} title={project.name} detail={project.rootPath} action="Locate" onAction={() => onRelocateProject(project.id)} attention />
+                <HealthRow key={project.id} icon={Gamepad2} title={project.name} detail={collapseHomePath(project.rootPath)} action="Locate" onAction={() => onRelocateProject(project.id)} attention />
               ))}
             </div>
           </section>

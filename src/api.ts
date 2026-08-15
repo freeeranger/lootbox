@@ -1,4 +1,10 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import {
+  mockSnapshot,
+  mockFilterOptions,
+  mockAssets,
+  getMockAssetPage,
+} from "./mockData";
 import type {
   AssetPage,
   AssetQuery,
@@ -21,42 +27,74 @@ import type {
   GodotProjectRemovalResult,
 } from "./types";
 
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+async function safeInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (isTauri) {
+    return invoke<T>(cmd, args);
+  }
+  // Browser dev mock fallback
+  if (cmd === "get_library_snapshot") return mockSnapshot as unknown as T;
+  if (cmd === "query_assets") return getMockAssetPage((args?.request ?? {}) as AssetQuery) as unknown as T;
+  if (cmd === "query_asset_selections") {
+    return mockAssets.map((a) => ({ id: a.id, assetType: a.assetType })) as unknown as T;
+  }
+  if (cmd === "get_filter_options") return mockFilterOptions as unknown as T;
+  if (cmd === "get_project_status") {
+    return {
+      projectId: (args?.projectId as number) ?? 1,
+      destination: "res://assets/lootbox",
+      trackedFiles: 18,
+      upToDateFiles: 18,
+      sourceChangedFiles: 0,
+      sourceMissingFiles: 0,
+      projectModifiedFiles: 0,
+      projectMissingFiles: 0,
+      lastExportedAt: "2026-08-15T16:00:00Z",
+      runs: [],
+    } as unknown as T;
+  }
+  if (cmd === "get_diagnostics") return [] as unknown as T;
+  if (cmd === "get_cache_status") return { thumbnailCount: 42, totalSizeBytes: 1048576 } as unknown as T;
+  return undefined as unknown as T;
+}
+
 export const api = {
-  snapshot: () => invoke<LibrarySnapshot>("get_library_snapshot"),
-  assets: (request: AssetQuery) => invoke<AssetPage>("query_assets", { request }),
+  snapshot: () => safeInvoke<LibrarySnapshot>("get_library_snapshot"),
+  assets: (request: AssetQuery) => safeInvoke<AssetPage>("query_assets", { request }),
   assetSelections: (request: AssetQuery) =>
-    invoke<AssetSelection[]>("query_asset_selections", { request }),
+    safeInvoke<AssetSelection[]>("query_asset_selections", { request }),
   importPack: (path: string, jobId: string, onProgress: (progress: ImportProgress) => void) => {
     const onEvent = new Channel<ImportProgress>();
     onEvent.onmessage = onProgress;
-    return invoke<PackSummary>("import_pack", { path, jobId, onEvent });
+    return safeInvoke<PackSummary>("import_pack", { path, jobId, onEvent });
   },
-  cancelImport: (jobId: string) => invoke<void>("cancel_import", { jobId }),
+  cancelImport: (jobId: string) => safeInvoke<void>("cancel_import", { jobId }),
   saveModelThumbnail: (assetId: number, pngData: string) =>
-    invoke<string>("save_model_thumbnail", { assetId, pngData }),
-  removePack: (packId: number) => invoke<void>("remove_pack", { packId }),
+    safeInvoke<string>("save_model_thumbnail", { assetId, pngData }),
+  removePack: (packId: number) => safeInvoke<void>("remove_pack", { packId }),
   renamePack: (packId: number, name: string) =>
-    invoke<void>("rename_pack", { packId, name }),
+    safeInvoke<void>("rename_pack", { packId, name }),
   setAssetsExcluded: (assetIds: number[], excluded: boolean) =>
-    invoke<void>("set_assets_excluded", { assetIds, excluded }),
+    safeInvoke<void>("set_assets_excluded", { assetIds, excluded }),
   relocatePack: (packId: number, path: string) =>
-    invoke<PackSummary>("relocate_pack", { packId, path }),
+    safeInvoke<PackSummary>("relocate_pack", { packId, path }),
   addTag: (assetId: number, name: string) =>
-    invoke<void>("add_tag", { assetId, name }),
+    safeInvoke<void>("add_tag", { assetId, name }),
   addTags: (assetIds: number[], name: string) =>
-    invoke<number[]>("add_tags", { assetIds, name }),
+    safeInvoke<number[]>("add_tags", { assetIds, name }),
   removeTag: (assetId: number, name: string) =>
-    invoke<void>("remove_tag", { assetId, name }),
+    safeInvoke<void>("remove_tag", { assetId, name }),
   removeTags: (assetIds: number[], name: string) =>
-    invoke<number[]>("remove_tags", { assetIds, name }),
+    safeInvoke<number[]>("remove_tags", { assetIds, name }),
   createCollection: (name: string) =>
-    invoke<CollectionSummary>("create_collection", { name }),
+    safeInvoke<CollectionSummary>("create_collection", { name }),
   setCollectionMembership: (
     assetId: number,
     collectionId: number,
     included: boolean,
   ) =>
-    invoke<void>("set_collection_membership", {
+    safeInvoke<void>("set_collection_membership", {
       assetId,
       collectionId,
       included,
@@ -65,76 +103,76 @@ export const api = {
     assetIds: number[],
     collectionId: number,
     included: boolean,
-  ) => invoke<number[]>("set_collection_memberships", { assetIds, collectionId, included }),
+  ) => safeInvoke<number[]>("set_collection_memberships", { assetIds, collectionId, included }),
   setClassificationOverride: (
     assetIds: number[],
     assetType?: string,
     mapRole?: string,
     groupAction?: "merge" | "split",
-  ) => invoke<ClassificationOverrideSnapshot[]>("set_classification_override", {
+  ) => safeInvoke<ClassificationOverrideSnapshot[]>("set_classification_override", {
     assetIds,
     assetType: assetType || null,
     mapRole: mapRole || null,
     groupAction: groupAction || null,
   }),
   resetClassificationOverride: (assetIds: number[]) =>
-    invoke<ClassificationOverrideSnapshot[]>("reset_classification_override", { assetIds }),
+    safeInvoke<ClassificationOverrideSnapshot[]>("reset_classification_override", { assetIds }),
   restoreClassificationOverrides: (snapshots: ClassificationOverrideSnapshot[]) =>
-    invoke<void>("restore_classification_overrides", { snapshots }),
+    safeInvoke<void>("restore_classification_overrides", { snapshots }),
   purgeMissingAssets: (packId: number) =>
-    invoke<void>("purge_missing_assets", { packId }),
-  filterOptions: () => invoke<FilterOptions>("get_filter_options"),
-  cacheStatus: () => invoke<CacheStatus>("get_cache_status"),
-  cleanCache: () => invoke<CacheStatus>("clean_thumbnail_cache"),
-  clearCache: () => invoke<CacheStatus>("clear_thumbnail_cache"),
-  regenerateImageThumbnails: () => invoke<CacheStatus>("regenerate_image_thumbnails"),
+    safeInvoke<void>("purge_missing_assets", { packId }),
+  filterOptions: () => safeInvoke<FilterOptions>("get_filter_options"),
+  cacheStatus: () => safeInvoke<CacheStatus>("get_cache_status"),
+  cleanCache: () => safeInvoke<CacheStatus>("clean_thumbnail_cache"),
+  clearCache: () => safeInvoke<CacheStatus>("clear_thumbnail_cache"),
+  regenerateImageThumbnails: () => safeInvoke<CacheStatus>("regenerate_image_thumbnails"),
   createBackup: (destination?: string) =>
-    invoke<string>("create_metadata_backup", { destination: destination ?? null }),
-  restoreBackup: (path: string) => invoke<void>("restore_metadata_backup", { path }),
-  diagnostics: () => invoke<DiagnosticEntry[]>("get_diagnostics"),
+    safeInvoke<string>("create_metadata_backup", { destination: destination ?? null }),
+  restoreBackup: (path: string) => safeInvoke<void>("restore_metadata_backup", { path }),
+  diagnostics: () => safeInvoke<DiagnosticEntry[]>("get_diagnostics"),
   logDiagnostic: (level: string, context: string, message: string) =>
-    invoke<void>("log_diagnostic", { level, context, message }),
+    safeInvoke<void>("log_diagnostic", { level, context, message }),
   deleteCollection: (collectionId: number) =>
-    invoke<void>("delete_collection", { collectionId }),
+    safeInvoke<void>("delete_collection", { collectionId }),
   addGodotProject: (path: string) =>
-    invoke<ProjectSummary>("add_godot_project", { path }),
+    safeInvoke<ProjectSummary>("add_godot_project", { path }),
   relocateGodotProject: (projectId: number, path: string) =>
-    invoke<ProjectSummary>("relocate_godot_project", { projectId, path }),
+    safeInvoke<ProjectSummary>("relocate_godot_project", { projectId, path }),
   removeProject: (projectId: number) =>
-    invoke<void>("remove_project", { projectId }),
+    safeInvoke<void>("remove_project", { projectId }),
   projectStatus: (projectId: number) =>
-    invoke<ProjectStatus>("get_project_status", { projectId }),
+    safeInvoke<ProjectStatus>("get_project_status", { projectId }),
   previewAssetsToGodot: (projectId: number, assetIds: number[], modelFormats?: string[] | null) =>
-    invoke<GodotExportPreview>("preview_assets_to_godot", {
+    safeInvoke<GodotExportPreview>("preview_assets_to_godot", {
       projectId,
       assetIds,
       modelFormats: modelFormats ?? null,
     }),
   exportAssetsToGodot: (projectId: number, assetIds: number[], modelFormats?: string[] | null) =>
-    invoke<GodotExportResult>("export_assets_to_godot", {
+    safeInvoke<GodotExportResult>("export_assets_to_godot", {
       projectId,
       assetIds,
       modelFormats: modelFormats ?? null,
     }),
   previewRemoveAssetsFromGodotProject: (projectId: number, assetIds: number[]) =>
-    invoke<GodotProjectRemovalPreview>("preview_remove_assets_from_godot_project", {
+    safeInvoke<GodotProjectRemovalPreview>("preview_remove_assets_from_godot_project", {
       projectId,
       assetIds,
     }),
   removeAssetsFromGodotProject: (projectId: number, assetIds: number[]) =>
-    invoke<GodotProjectRemovalResult>("remove_assets_from_godot_project", {
+    safeInvoke<GodotProjectRemovalResult>("remove_assets_from_godot_project", {
       projectId,
       assetIds,
     }),
-  hashLibrary: () => invoke<number>("hash_library"),
-  openAsset: (path: string) => invoke<void>("open_asset", { path }),
-  revealAsset: (path: string) => invoke<void>("reveal_asset", { path }),
-  audioDuration: (path: string) => invoke<number>("get_audio_duration", { path }),
+  hashLibrary: () => safeInvoke<number>("hash_library"),
+  openAsset: (path: string) => safeInvoke<void>("open_asset", { path }),
+  revealAsset: (path: string) => safeInvoke<void>("reveal_asset", { path }),
+  audioDuration: (path: string) => safeInvoke<number>("get_audio_duration", { path }),
   audioAnalysis: (path: string) =>
-    invoke<AudioAnalysis>("get_audio_analysis", { path }),
-  toggleAudio: (path: string) => invoke<AudioStatus>("toggle_audio", { path }),
-  audioStatus: () => invoke<AudioStatus>("get_audio_status"),
+    safeInvoke<AudioAnalysis>("get_audio_analysis", { path }),
+  toggleAudio: (path: string) => safeInvoke<AudioStatus>("toggle_audio", { path }),
+  audioStatus: () => safeInvoke<AudioStatus>("get_audio_status"),
   seekAudio: (path: string, positionSeconds: number) =>
-    invoke<AudioStatus>("seek_audio", { path, positionSeconds }),
-  stopAudio: (path: string) => invoke<void>("stop_audio", { path }),
+    safeInvoke<AudioStatus>("seek_audio", { path, positionSeconds }),
+  stopAudio: (path: string) => safeInvoke<void>("stop_audio", { path }),
 };

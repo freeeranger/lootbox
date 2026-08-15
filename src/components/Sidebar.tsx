@@ -48,7 +48,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { cn } from "@/lib/utils";
+import { cn, collapseHomePath } from "@/lib/utils";
 import type {
   AssetType,
   LibrarySelection,
@@ -306,14 +306,14 @@ export function Sidebar({
                 <p className="truncate text-xs font-semibold leading-tight text-foreground">
                   {activeProject ? activeProject.name : "Global Library"}
                 </p>
-                <p className="truncate font-mono text-[11px] text-muted-foreground leading-tight mt-0.5" title={activeProject ? activeProject.rootPath : undefined}>
-                  {activeProject ? activeProject.rootPath : `${snapshot.totalAssets.toLocaleString()} assets`}
+                <p className="truncate font-mono text-[11px] text-muted-foreground leading-tight mt-0.5" title={activeProject ? collapseHomePath(activeProject.rootPath) : undefined}>
+                  {activeProject ? collapseHomePath(activeProject.rootPath) : `${snapshot.totalAssets.toLocaleString()} assets`}
                 </p>
               </div>
             </div>
             <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56 p-1 text-xs">
+          <DropdownMenuContent align="start" className="w-64 p-1 text-xs">
             <DropdownMenuGroup>
               <DropdownMenuLabel className="px-2 py-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 Workspace
@@ -340,7 +340,10 @@ export function Sidebar({
                   onClick={() => onActivateProject(project)}
                 >
                   <Gamepad2 className={cn("size-3.5 shrink-0", !project.available && "text-destructive", project.available && "text-primary")} />
-                  <span className="flex-1 truncate">{project.name}</span>
+                  <div className="min-w-0 flex-1 flex flex-col">
+                    <span className="truncate">{project.name}</span>
+                    <span className="truncate font-mono text-[11px] text-muted-foreground">{collapseHomePath(project.rootPath)}</span>
+                  </div>
                   {activeProjectId === project.id && <Check className="size-3.5 shrink-0 text-primary" />}
                 </DropdownMenuItem>
               ))}
@@ -386,7 +389,7 @@ export function Sidebar({
                     active={isSelected(selection, { kind: "project", projectId: activeProject.id })}
                     icon={activeProject.available ? Gamepad2 : FolderCog}
                     label="Project assets"
-                    description={activeProject.rootPath}
+                    description={collapseHomePath(activeProject.rootPath)}
                     count={activeProject.assetCount}
                     warning={!activeProject.available}
                     onClick={() => onSelect({ kind: "project", projectId: activeProject.id })}
@@ -492,7 +495,7 @@ export function Sidebar({
                         icon={pack.available ? Folder : FolderCog}
                         label={pack.name}
                         count={pack.assetCount}
-                        title={pack.available ? pack.rootPath : `Missing · ${pack.rootPath}`}
+                        title={pack.available ? collapseHomePath(pack.rootPath) : `Missing · ${collapseHomePath(pack.rootPath)}`}
                         warning={!pack.available}
                         onClick={() => onSelect(candidate)}
                       />

@@ -1,6 +1,7 @@
 import { Activity, FolderOpen, Gamepad2, History, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { collapseHomePath } from "@/lib/utils";
 import { useState } from "react";
 import type { ProjectStatus, ProjectSummary } from "../types";
 
@@ -40,7 +41,7 @@ export function ProjectWorkspaceBar({
         <div className="flex min-w-0 items-center gap-2">
           <Gamepad2 className="size-3.5 shrink-0 text-primary" />
           {isProjectView ? (
-            <span className="truncate font-mono text-[11px] text-muted-foreground" title={project.rootPath}>
+            <span className="truncate font-mono text-[11px] text-muted-foreground" title={collapseHomePath(project.rootPath)}>
               {status?.destination ?? "res://assets/lootbox"}
             </span>
           ) : (
@@ -50,7 +51,7 @@ export function ProjectWorkspaceBar({
                 type="button"
                 className="truncate font-medium text-foreground hover:text-primary transition-colors cursor-pointer"
                 onClick={onViewAssets}
-                title={`View ${project.name} assets (${project.rootPath})`}
+                title={`View ${project.name} assets (${collapseHomePath(project.rootPath)})`}
               >
                 {project.name}
               </button>
@@ -146,7 +147,7 @@ export function ProjectWorkspaceBar({
         <DialogContent className="gap-4 sm:max-w-lg">
           <DialogHeader className="gap-1">
             <DialogTitle className="text-sm">{project.name} export history</DialogTitle>
-            <DialogDescription className="select-text truncate font-mono text-xs" title={project.rootPath}>{project.rootPath}</DialogDescription>
+            <DialogDescription className="select-text truncate font-mono text-xs" title={collapseHomePath(project.rootPath)}>{collapseHomePath(project.rootPath)}</DialogDescription>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-x-5 gap-y-2 rounded-md border bg-muted/10 p-3 text-xs">
             <span className="text-muted-foreground">Tracked files</span><span className="font-mono tabular-nums">{status?.trackedFiles.toLocaleString() ?? "—"}</span>

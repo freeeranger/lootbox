@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { cn } from "@/lib/utils";
+import { cn, collapseHomePath } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -449,7 +449,7 @@ export function DetailPanel({
                     key={duplicate.id}
                     className="block w-full min-w-0 rounded-sm border px-2 py-1.5 text-left hover:bg-muted/40"
                     onClick={() => onOpenVariant(duplicate.absolutePath)}
-                    title={duplicate.absolutePath}
+                    title={collapseHomePath(duplicate.absolutePath)}
                   >
                     <span className="block truncate text-[11px] font-medium">{duplicate.packName}</span>
                     <span className="block truncate text-[11px] text-muted-foreground">
