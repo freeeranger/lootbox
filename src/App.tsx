@@ -8,6 +8,7 @@ import {
   Activity,
   ArchiveRestore,
   ArrowUpDown,
+  BookmarkPlus,
   Check,
   Copy,
   DatabaseBackup,
@@ -37,6 +38,8 @@ import { DetailPanel } from "./components/DetailPanel";
 import { EmptyState } from "./components/EmptyState";
 import { ImportStageRail } from "./components/QuietAcknowledgment";
 import { Sidebar } from "./components/Sidebar";
+import { LibraryHealth } from "./components/LibraryHealth";
+import { ProjectWorkspaceBar } from "./components/ProjectWorkspaceBar";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -79,6 +82,9 @@ import { cn } from "@/lib/utils";
 import { toggleAudioPlayback } from "./audioPlayback";
 import { godotExportCompletionCopy } from "./godotExportCompletion";
 import { readProjectModelFormats, writeProjectModelFormats } from "./godotExportPreferences";
+import { readSavedViews, resolveSavedSelection, writeSavedViews } from "./savedViews";
+import type { SavedAssetView, SavedViewFilters } from "./savedViews";
+import { assetListRowHeight, isAssetKeyboardTarget } from "./workspaceShortcuts";
 import type {
   Asset,
   AssetQuery,
@@ -99,6 +105,8 @@ import type {
 const emptySnapshot: LibrarySnapshot = {
   totalAssets: 0,
   duplicateAssets: 0,
+  removedAssets: 0,
+  missingAssets: 0,
   hashingAssets: false,
   packs: [],
   collections: [],
@@ -110,8 +118,8 @@ const emptyFilterOptions: FilterOptions = { extensions: [], mapRoles: [], tags: 
 const assetPageSize = 160;
 const searchDebounceMs = 300;
 const guardedBulkEditThreshold = 10;
-const clearedFilters = { extension: "", mapRole: "", tag: "", minWidth: "", minConfidence: "", status: "" };
-type AssetFilters = typeof clearedFilters;
+const clearedFilters: SavedViewFilters = { extension: "", mapRole: "", tag: "", minWidth: "", minConfidence: "", status: "", projectUsage: "" };
+type AssetFilters = SavedViewFilters;
 
 const typeLabels: Record<AssetType, string> = {
   image: "Images",
@@ -170,13 +178,15 @@ function isTypingTarget(target: EventTarget | null) {
 
 function AssetSearch({
   inputRef,
+  value,
+  onValueChange,
   onQueryChange,
 }: {
   inputRef: RefObject<HTMLInputElement | null>;
+  value: string;
+  onValueChange: (value: string) => void;
   onQueryChange: (query: string) => void;
 }) {
-  const [value, setValue] = useState("");
-
   useEffect(() => {
     const timer = window.setTimeout(
       () => onQueryChange(value.trim()),
@@ -186,7 +196,7 @@ function AssetSearch({
   }, [onQueryChange, value]);
 
   function clear() {
-    setValue("");
+    onValueChange("");
     onQueryChange("");
     inputRef.current?.focus();
   }
@@ -197,7 +207,7 @@ function AssetSearch({
       <Input
         ref={inputRef}
         value={value}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={(event) => onValueChange(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape" && value) {
             event.preventDefault();
@@ -270,7 +280,16 @@ function App() {
   const [selection, setSelection] = useState<LibrarySelection>({ kind: "all" });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+  const [searchValue, setSearchValue] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [activeProjectId, setActiveProjectId] = useState<number | null>(() => {
+    const saved = Number(window.localStorage.getItem("lootbox:active-project"));
+    return Number.isInteger(saved) && saved > 0 ? saved : null;
+  });
+  const [savedViews, setSavedViews] = useState<SavedAssetView[]>(readSavedViews);
+  const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(null);
+  const [savingView, setSavingView] = useState(false);
+  const [savedViewName, setSavedViewName] = useState("");
   const [view, setView] = useState<"grid" | "list">(() => window.localStorage.getItem("lootbox:asset-view") === "list" ? "list" : "grid");
   const [sort, setSort] = useState<AssetSort>(() => {
     const saved = window.localStorage.getItem("lootbox:asset-sort");
@@ -287,7 +306,6 @@ function App() {
   const [importing, setImporting] = useState(false);
   const [pendingImportCount, setPendingImportCount] = useState(0);
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
-  const [activeImportJobId, setActiveImportJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [errorContext, setErrorContext] = useState("ui");
   const [notice, setNotice] = useState<string | null>(null);
@@ -334,7 +352,6 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [godotPickerOpen, setGodotPickerOpen] = useState(false);
   const [reviewSelectionOpen, setReviewSelectionOpen] = useState(false);
   const [reviewSelectionLimit, setReviewSelectionLimit] = useState(250);
   const [settingsMessage, setSettingsMessage] = useState("");
@@ -374,11 +391,11 @@ function App() {
     if (selection.kind === "type") next.assetType = selection.assetType;
     if (selection.kind === "pack") next.packId = selection.packId;
     if (selection.kind === "removed") {
-      next.packId = selection.packId;
+      if (selection.packId !== undefined) next.packId = selection.packId;
       next.excluded = true;
     }
     if (selection.kind === "missing") {
-      next.packId = selection.packId;
+      if (selection.packId !== undefined) next.packId = selection.packId;
       next.missing = true;
     }
     if (selection.kind === "collection") next.collectionId = selection.collectionId;
@@ -393,8 +410,10 @@ function App() {
     }
     if (filters.minConfidence) next.minConfidence = Number(filters.minConfidence);
     if (filters.status === "missing") next.missing = true;
+    if (filters.projectUsage === "active" && activeProjectId !== null) next.projectId = activeProjectId;
+    if (filters.projectUsage === "unused") next.unusedByProjects = true;
     return next;
-  }, [debouncedSearch, filters, selection, sort, sortDirection]);
+  }, [activeProjectId, debouncedSearch, filters, selection, sort, sortDirection]);
   const selectionScopeKey = useMemo(
     () => JSON.stringify({ debouncedSearch, filters, selection }),
     [debouncedSearch, filters, selection],
@@ -436,8 +455,22 @@ function App() {
       ? pages.reduce((total, page) => total + page.items.length, 0)
       : undefined,
     placeholderData: (previous) => previous,
+    enabled: selection.kind !== "health",
   });
   const snapshot = snapshotQuery.data;
+  const activeProject = useMemo(
+    () => activeProjectId === null ? null : snapshot.projects.find((project) => project.id === activeProjectId) ?? null,
+    [activeProjectId, snapshot.projects],
+  );
+  const projectStatusQuery = useQuery({
+    queryKey: ["project-status", activeProjectId],
+    queryFn: () => api.projectStatus(activeProjectId!),
+    enabled: activeProjectId !== null && Boolean(activeProject?.available),
+    staleTime: 30_000,
+  });
+  const activeProjectAttention = projectStatusQuery.data
+    ? projectStatusQuery.data.sourceChangedFiles + projectStatusQuery.data.sourceMissingFiles + projectStatusQuery.data.projectModifiedFiles + projectStatusQuery.data.projectMissingFiles
+    : 0;
   const filterOptions = filterOptionsQuery.data;
   const cacheStatus = cacheStatusQuery.data ?? null;
   const diagnostics = diagnosticsQuery.data ?? [];
@@ -450,6 +483,15 @@ function App() {
   const loadingMore = assetPagesQuery.isFetchingNextPage;
   const loading = assetPagesQuery.isPending ||
     (assetPagesQuery.isFetching && !assetPagesQuery.isFetchingNextPage);
+
+  useEffect(() => {
+    if (activeProjectId === null || snapshotQuery.isPending) return;
+    if (!snapshot.projects.some((project) => project.id === activeProjectId)) {
+      setActiveProjectId(null);
+      window.localStorage.removeItem("lootbox:active-project");
+      if (selection.kind === "project") setSelection({ kind: "all" });
+    }
+  }, [activeProjectId, selection.kind, snapshot.projects, snapshotQuery.isPending]);
 
   assetsRef.current = assets;
   const selectedAsset = useMemo(() => {
@@ -502,6 +544,18 @@ function App() {
     selectedPathCacheRef.current.clear();
     applyAssetSelection(new Set(), null);
   }, [applyAssetSelection]);
+  const activateProject = useCallback((project: ProjectSummary | null) => {
+    setActiveProjectId(project?.id ?? null);
+    setActiveSavedViewId(null);
+    if (project) {
+      window.localStorage.setItem("lootbox:active-project", String(project.id));
+      setSelection({ kind: "project", projectId: project.id });
+    } else {
+      window.localStorage.removeItem("lootbox:active-project");
+      setSelection((current) => current.kind === "project" ? { kind: "all" } : current);
+    }
+    clearAssetSelection();
+  }, [clearAssetSelection]);
   const selectedPack = useMemo(
     () =>
       selection.kind === "pack" || selection.kind === "removed" || selection.kind === "missing"
@@ -523,11 +577,12 @@ function App() {
       minWidth: (value) => `${value} × ${value}+`,
       minConfidence: (value) => `Confidence ≤ ${value}%`,
       status: () => "Missing files",
+      projectUsage: (value) => value === "active" ? `In ${activeProject?.name ?? "active project"}` : "Not used by projects",
     };
     return (Object.entries(filters) as Array<[keyof typeof filters, string]>)
       .filter(([, value]) => Boolean(value))
       .map(([key, value]) => ({ key, label: labels[key](value) }));
-  }, [filters]);
+  }, [activeProject?.name, filters]);
 
   const selectionSummary = useMemo(() => {
     if (selectedIds.size === 0) return "";
@@ -554,7 +609,7 @@ function App() {
   }, [loadSnapshot, reportError]);
 
   const serverQueryError = snapshotQuery.error ?? filterOptionsQuery.error ??
-    assetPagesQuery.error ?? cacheStatusQuery.error ?? diagnosticsQuery.error;
+    assetPagesQuery.error ?? projectStatusQuery.error ?? cacheStatusQuery.error ?? diagnosticsQuery.error;
   useEffect(() => {
     if (serverQueryError) reportError(serverQueryError, "server-query");
   }, [reportError, serverQueryError]);
@@ -575,6 +630,7 @@ function App() {
       queryClient.invalidateQueries({ queryKey: ["library-snapshot"] }),
       queryClient.invalidateQueries({ queryKey: ["assets"] }),
       queryClient.invalidateQueries({ queryKey: ["filter-options"] }),
+      queryClient.invalidateQueries({ queryKey: ["project-status"] }),
     ]);
   }, [queryClient]);
 
@@ -597,6 +653,10 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("lootbox:asset-view", view);
   }, [view]);
+
+  useEffect(() => {
+    writeSavedViews(savedViews);
+  }, [savedViews]);
 
   function clampPanelWidth(side: "left" | "right", width: number) {
     const otherWidth = side === "left" ? rightPanelWidth : leftPanelWidth;
@@ -689,15 +749,21 @@ function App() {
     };
   }, [assetPagesQuery.isFetching, assetPagesQuery.isPlaceholderData, assets, clearAssetSelection, query, queryClient, reportError, selectedId]);
 
-  useEffect(() => {
-    const viewport = assetScrollRef.current;
-    if (!viewport) return;
+  const viewportObserverRef = useRef<ResizeObserver | null>(null);
+  const setAssetScrollRef = useCallback((element: HTMLDivElement | null) => {
+    assetScrollRef.current = element;
+    viewportObserverRef.current?.disconnect();
+    if (!element) return;
     const observer = new ResizeObserver(([entry]) => {
       setAssetViewportWidth(entry.contentRect.width);
     });
-    observer.observe(viewport);
-    setAssetViewportWidth(viewport.clientWidth);
-    return () => observer.disconnect();
+    observer.observe(element);
+    viewportObserverRef.current = observer;
+    setAssetViewportWidth(element.clientWidth);
+  }, []);
+
+  useEffect(() => {
+    return () => viewportObserverRef.current?.disconnect();
   }, []);
 
   useEffect(() => {
@@ -713,6 +779,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
         if (event.shiftKey) {
           event.preventDefault();
@@ -725,29 +792,31 @@ function App() {
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "e" && selectedIdsRef.current.size > 0) {
         event.preventDefault();
-        setGodotPickerOpen(true);
+        if (activeProject?.available) void addSelectionToGodot(activeProject.id);
+        else setNotice("Select an available workspace project before exporting");
       }
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "c" && selectedIdsRef.current.size > 0) {
         event.preventDefault();
         setAddSelectionToNewCollection(true);
         setCreatingCollection(true);
       }
-      if (!event.metaKey && !event.ctrlKey && !event.altKey && !isTypingTarget(event.target)) {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        clearAssetSelection();
+      }
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && isAssetKeyboardTarget(event.target)) {
         if (event.key.toLowerCase() === "g") setView("grid");
         if (event.key.toLowerCase() === "l") setView("list");
         if (event.key.toLowerCase() === "t" && selectedIdsRef.current.size > 0) tagInputRef.current?.focus();
       }
-      if (event.key === "?" && !isTypingTarget(event.target)) {
+      if (event.key === "?") {
         event.preventDefault();
         setShortcutsOpen(true);
-      }
-      if (event.key === "Escape") {
-        if (document.activeElement !== searchRef.current) clearAssetSelection();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [clearAssetSelection, filters]);
+  }, [activeProject, clearAssetSelection, filters]);
 
   async function runQueuedImport(path: string) {
     const jobId = crypto.randomUUID();
@@ -757,7 +826,6 @@ function App() {
     setImporting(true);
     try {
       return await api.importPack(path, jobId, (progress) => {
-        setActiveImportJobId(jobId);
         setImportProgress(progress);
       });
     } finally {
@@ -767,7 +835,6 @@ function App() {
       if (pendingImportCountRef.current === 0) {
         setImporting(false);
         setImportProgress(null);
-        setActiveImportJobId(null);
       }
     }
   }
@@ -850,6 +917,8 @@ function App() {
       const project = await api.addGodotProject(path);
       await loadSnapshot();
       if (!preserveAssetSelection) {
+        setActiveProjectId(project.id);
+        window.localStorage.setItem("lootbox:active-project", String(project.id));
         setSelection({ kind: "project", projectId: project.id });
         clearAssetSelection();
       }
@@ -865,6 +934,10 @@ function App() {
       if (selection.kind === "project" && selection.projectId === project.id) {
         setSelection({ kind: "all" });
         clearAssetSelection();
+      }
+      if (activeProjectId === project.id) {
+        setActiveProjectId(null);
+        window.localStorage.removeItem("lootbox:active-project");
       }
       setConfirmProjectRemoval(null);
       await loadSnapshot();
@@ -920,6 +993,7 @@ function App() {
       rootPath: projectRootPath ?? "",
       assetCount: 0,
       available: true,
+      lastExportedAt: null,
     };
     setError(null);
     setNotice(null);
@@ -937,7 +1011,9 @@ function App() {
         : current);
     } catch (caught) {
       if (requestId !== godotPreviewRequestRef.current) return;
-      setGodotExport(null);
+      setGodotExport((current) => current && current.project.id === projectId
+        ? { ...current, loading: false }
+        : current);
       reportError(caught, "godot-export-preview");
     }
   }
@@ -981,7 +1057,7 @@ function App() {
       );
       setGodotExportNotice({ project: godotExport.project, result });
       setGodotExport(null);
-      void loadSnapshot().catch((caught) => {
+      void refresh().catch((caught) => {
         void api.logDiagnostic("error", "library-refresh", errorMessage(caught));
       });
     } catch (caught) {
@@ -1020,6 +1096,7 @@ function App() {
   async function deleteCurrentSource() {
     try {
       if (selection.kind === "pack" || selection.kind === "removed" || selection.kind === "missing") {
+        if (selection.packId === undefined) return;
         await api.removePack(selection.packId);
       }
       else if (selection.kind === "collection") {
@@ -1077,6 +1154,23 @@ function App() {
     }
   }
 
+  async function relocateGodotProject(project: ProjectSummary) {
+    const path = await open({
+      directory: true,
+      multiple: false,
+      title: `Locate ${project.name}`,
+    });
+    if (!path) return;
+    try {
+      setError(null);
+      const relocated = await api.relocateGodotProject(project.id, path);
+      await refresh();
+      setNotice(`${relocated.name} reconnected`);
+    } catch (caught) {
+      reportError(caught, "relocate-project");
+    }
+  }
+
   function requestForgetPack(pack: PackSummary) {
     setSelection({ kind: "pack", packId: pack.id });
     clearAssetSelection();
@@ -1107,10 +1201,12 @@ function App() {
       return snapshot.packs.find((pack) => pack.id === selection.packId)?.name ?? "Pack";
     }
     if (selection.kind === "removed") {
+      if (selection.packId === undefined) return "Removed assets";
       const name = snapshot.packs.find((pack) => pack.id === selection.packId)?.name ?? "Pack";
       return `${name} · Removed`;
     }
     if (selection.kind === "missing") {
+      if (selection.packId === undefined) return "Missing files";
       const name = snapshot.packs.find((pack) => pack.id === selection.packId)?.name ?? "Pack";
       return `${name} · Missing`;
     }
@@ -1121,11 +1217,56 @@ function App() {
       );
     }
     if (selection.kind === "duplicates") return "Duplicates";
+    if (selection.kind === "health") return "Library health";
     if (selection.kind === "project") {
       return snapshot.projects.find((item) => item.id === selection.projectId)?.name ?? "Godot project";
     }
     return "All assets";
   }, [selection, snapshot.collections, snapshot.packs, snapshot.projects]);
+
+  function openSavedView(view: SavedAssetView) {
+    const resolved = resolveSavedSelection(view.selection, new Set(snapshot.projects.map((project) => project.id)));
+    setSelection(resolved.selection);
+    if (resolved.selection.kind === "project") {
+      const projectId = resolved.selection.projectId;
+      const project = snapshot.projects.find((candidate) => candidate.id === projectId);
+      if (project) {
+        setActiveProjectId(project.id);
+        window.localStorage.setItem("lootbox:active-project", String(project.id));
+      }
+    }
+    setSearchValue(view.query);
+    setDebouncedSearch(view.query.trim());
+    setFilters({ ...clearedFilters, ...view.filters });
+    setFilterDraft({ ...clearedFilters, ...view.filters });
+    setSort(view.sort);
+    setSortDirection(view.sortDirection);
+    setActiveSavedViewId(view.id);
+    clearAssetSelection();
+    if (resolved.staleProject) {
+      setNotice(`“${view.name}” referred to a project that is no longer registered. Opened all assets instead.`);
+    }
+  }
+
+  function saveCurrentView(event: React.FormEvent) {
+    event.preventDefault();
+    const name = savedViewName.trim();
+    if (!name) return;
+    const savedView: SavedAssetView = {
+      id: crypto.randomUUID(),
+      name,
+      query: searchValue.trim(),
+      filters: { ...filters },
+      sort,
+      sortDirection,
+      selection,
+    };
+    setSavedViews((current) => [...current, savedView]);
+    setActiveSavedViewId(savedView.id);
+    setSavingView(false);
+    setSavedViewName("");
+    setNotice(`${name} saved`);
+  }
 
   const gridColumns = Math.max(
     1,
@@ -1138,7 +1279,7 @@ function App() {
     view === "grid" ? Math.ceil(assets.length / gridColumns) : assets.length;
   const getAssetScrollElement = useCallback(() => assetScrollRef.current, []);
   const estimateAssetRowSize = useCallback(
-    () => (view === "grid" ? gridRowHeight : 44),
+    () => (view === "grid" ? gridRowHeight : assetListRowHeight),
     [gridRowHeight, view],
   );
   const getAssetRowKey = useCallback(
@@ -1205,6 +1346,10 @@ function App() {
       title: "The pack couldn’t be reconnected",
       message: "Choose the folder that contains the original pack files and try again.",
     };
+    if (errorContext === "relocate-project") return {
+      title: "The project couldn’t be reconnected",
+      message: "Choose the folder containing project.godot and try again.",
+    };
     if (errorContext.includes("backup")) return {
       title: "The backup operation didn’t finish",
       message: "The current library metadata is still available. Check the destination and try again.",
@@ -1224,6 +1369,8 @@ function App() {
         ? { label: "Choose folder", run: () => void importPack() }
         : errorContext === "relocate-pack" && selectedPack
           ? { label: "Locate folder", run: () => void relocatePack(selectedPack) }
+          : errorContext === "relocate-project" && activeProject
+            ? { label: "Locate project", run: () => void relocateGodotProject(activeProject) }
           : errorContext === "open-asset" && selectedAsset
             ? { label: "Reveal in folder", run: () => void api.revealAsset(selectedAsset.absolutePath).catch((caught) => reportError(caught, "reveal-asset")) }
             : errorContext === "reveal-asset" && selectedAsset
@@ -1456,9 +1603,8 @@ function App() {
       const currentIndex = selectedId === null
         ? -1
         : assets.findIndex((asset) => asset.id === selectedId);
-      const keyboardTarget = event.target instanceof HTMLElement ? event.target : null;
-      const browserHasFocus = Boolean(keyboardTarget?.closest("[data-asset-browser], [data-asset-card]")) || document.activeElement === document.body;
-      const visibleRows = Math.max(1, Math.floor((assetScrollRef.current?.clientHeight ?? 440) / (view === "grid" ? gridRowHeight : 44)));
+      const browserHasFocus = isAssetKeyboardTarget(event.target);
+      const visibleRows = Math.max(1, Math.floor((assetScrollRef.current?.clientHeight ?? 440) / (view === "grid" ? gridRowHeight : assetListRowHeight)));
       const pageStep = visibleRows * (view === "grid" ? gridColumns : 1);
       const directions: Record<string, number> = view === "grid"
         ? {
@@ -1500,18 +1646,20 @@ function App() {
         return;
       }
 
-      if (event.key === "Enter" && selectedAsset) {
+      if (browserHasFocus && event.key === "Enter" && selectedAsset) {
         event.preventDefault();
         openAsset(selectedAsset);
-      } else if (event.key === " " && selectedAsset?.assetType === "audio" && !event.repeat) {
+      } else if (browserHasFocus && event.key === " " && selectedAsset?.assetType === "audio" && !event.repeat) {
         event.preventDefault();
         void toggleAudioPlayback(selectedAsset.absolutePath).catch((caught) =>
           reportError(caught, "audio-playback"),
         );
       } else if (
         event.key === "Delete" &&
+        browserHasFocus &&
         selectedAsset &&
-        selection.kind !== "removed"
+        selection.kind !== "removed" &&
+        (selection.kind === "project" || activeProjectId === null)
       ) {
         event.preventDefault();
         requestDisplayedAssetRemoval(selectedAsset);
@@ -1521,6 +1669,7 @@ function App() {
     return () => window.removeEventListener("keydown", handleLibraryKeys);
   }, [
     applyAssetSelection,
+    activeProjectId,
     assets,
     confirmAssetRemoval.length,
     confirmDelete,
@@ -1556,9 +1705,26 @@ function App() {
         snapshot={snapshot}
         selection={selection}
         creatingCollection={creatingCollection}
+        activeProjectId={activeProjectId}
+        activeProjectAttention={activeProjectAttention}
+        savedViews={savedViews}
+        activeSavedViewId={activeSavedViewId}
         onSelect={(next) => {
           setSelection(next);
+          setActiveSavedViewId(null);
           clearAssetSelection();
+        }}
+        onActivateProject={activateProject}
+        onRelocateProject={(project) => void relocateGodotProject(project)}
+        onOpenSavedView={openSavedView}
+        onDeleteSavedView={(view) => {
+          setSavedViews((current) => current.filter((candidate) => candidate.id !== view.id));
+          if (activeSavedViewId === view.id) setActiveSavedViewId(null);
+          setMetadataUndo({
+            label: `Undo deleting “${view.name}”`,
+            run: async () => setSavedViews((current) => current.some((candidate) => candidate.id === view.id) ? current : [...current, view]),
+          });
+          setNotice(`${view.name} deleted`);
         }}
         onImport={() => void importPack()}
         onStartCollection={() => {
@@ -1611,7 +1777,15 @@ function App() {
 
       <main className="flex min-w-0 flex-col overflow-hidden">
         <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-4">
-          <AssetSearch inputRef={searchRef} onQueryChange={setDebouncedSearch} />
+          <AssetSearch
+            inputRef={searchRef}
+            value={searchValue}
+            onValueChange={(value) => {
+              setSearchValue(value);
+              setActiveSavedViewId(null);
+            }}
+            onQueryChange={setDebouncedSearch}
+          />
 
           <div className="flex items-center gap-2">
             <Button
@@ -1632,6 +1806,22 @@ function App() {
                 <span className="font-mono text-[11px] text-primary max-[1150px]:hidden">{activeFilters.length}</span>
               )}
             </Button>
+            {selection.kind !== "health" && (
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                className="rounded-md"
+                onClick={() => {
+                  setSavedViewName(activeSavedViewId ? `${sectionTitle} copy` : sectionTitle);
+                  setSavingView(true);
+                }}
+                aria-label="Save current view"
+                title="Save current search, filters, scope, and sorting"
+              >
+                <BookmarkPlus />
+              </Button>
+            )}
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
@@ -1662,6 +1852,7 @@ function App() {
                     onClick={() => {
                       setSort(value);
                       setSortDirection(value === "newest" || value === "largest" ? "desc" : "asc");
+                      setActiveSavedViewId(null);
                     }}
                   >
                     <Check className={cn(sort === value ? "opacity-100" : "opacity-0")} />
@@ -1673,7 +1864,10 @@ function App() {
                   <DropdownMenuItem
                     key={value}
                     className="rounded-sm text-xs"
-                    onClick={() => setSortDirection(value)}
+                    onClick={() => {
+                      setSortDirection(value);
+                      setActiveSavedViewId(null);
+                    }}
                   >
                     <Check className={cn(sortDirection === value ? "opacity-100" : "opacity-0")} />
                     {sortDirectionLabel(sort, value)}
@@ -1708,7 +1902,22 @@ function App() {
           </div>
         </header>
 
-        {activeFilters.length > 0 && (
+        {activeProject && (
+          <ProjectWorkspaceBar
+            project={activeProject}
+            status={projectStatusQuery.data}
+            loading={projectStatusQuery.isFetching}
+            onOpen={() => void api.openAsset(activeProject.rootPath).catch((caught) => reportError(caught, "open-project"))}
+            onRefresh={() => void projectStatusQuery.refetch()}
+            onViewAssets={() => {
+              setSelection({ kind: "project", projectId: activeProject.id });
+              setActiveSavedViewId(null);
+              clearAssetSelection();
+            }}
+          />
+        )}
+
+        {selection.kind !== "health" && activeFilters.length > 0 && (
           <div className="quiet-scrollbar flex h-9 shrink-0 items-center gap-1.5 overflow-x-auto border-b px-4" aria-label="Active filters">
             {activeFilters.map((filter) => (
               <Button
@@ -1717,18 +1926,53 @@ function App() {
                 variant="secondary"
                 size="xs"
                 className="shrink-0 rounded-full px-2 text-[11px]"
-                onClick={() => setFilters((current) => ({ ...current, [filter.key]: "" }))}
+                onClick={() => {
+                  setFilters((current) => ({ ...current, [filter.key]: "" }));
+                  setActiveSavedViewId(null);
+                }}
                 aria-label={`Remove ${filter.label} filter`}
               >
                 {filter.label}<X className="size-3" />
               </Button>
             ))}
-            <Button type="button" variant="ghost" size="xs" className="shrink-0 text-[11px] text-muted-foreground" onClick={() => setFilters({ ...clearedFilters })}>
+            <Button type="button" variant="ghost" size="xs" className="shrink-0 text-[11px] text-muted-foreground" onClick={() => {
+              setFilters({ ...clearedFilters });
+              setActiveSavedViewId(null);
+            }}>
               Clear all
             </Button>
           </div>
         )}
 
+        {selection.kind === "health" ? (
+          <LibraryHealth
+            snapshot={snapshot}
+            activeProjectName={activeProject?.name}
+            projectStatus={projectStatusQuery.data}
+            projectStatusLoading={projectStatusQuery.isFetching}
+            onViewMissing={() => {
+              setSelection({ kind: "missing" });
+              clearAssetSelection();
+            }}
+            onViewRemoved={() => {
+              setSelection({ kind: "removed" });
+              clearAssetSelection();
+            }}
+            onRelocatePack={(packId) => {
+              const pack = snapshot.packs.find((candidate) => candidate.id === packId);
+              if (pack) void relocatePack(pack);
+            }}
+            onRelocateProject={(projectId) => {
+              const project = snapshot.projects.find((candidate) => candidate.id === projectId);
+              if (project) void relocateGodotProject(project);
+            }}
+            onViewProject={() => {
+              if (activeProject) setSelection({ kind: "project", projectId: activeProject.id });
+            }}
+            onRefreshProject={() => void projectStatusQuery.refetch()}
+          />
+        ) : (
+        <>
         <div className={cn("flex h-12 shrink-0 items-center justify-between border-b px-4", selectedIds.size > 0 && "bg-primary/[0.035]")}>
           {selectedIds.size > 0 ? (
             <div className="flex min-w-0 items-center gap-2">
@@ -1761,46 +2005,28 @@ function App() {
                   <ExternalLink /> <span className="max-[1150px]:hidden">Open</span>
                 </Button>
               )}
-              {selection.kind !== "removed" && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger render={<Button type="button" variant="outline" size="sm" className="rounded-md" aria-label="Add to Godot" title="Add to Godot" />}>
-                    <Gamepad2 /> <span className="max-[1150px]:hidden">Add to Godot</span>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-80">
-                    {snapshot.projects.filter((project) => project.available).map((project) => (
-                      <DropdownMenuItem key={project.id} className="items-start py-2 text-xs" onClick={() => void addSelectionToGodot(project.id)}>
-                        <Gamepad2 className="mt-0.5 shrink-0" />
-                        <span className="min-w-0">
-                          <span className="block truncate">{project.name}</span>
-                          <span className="block truncate font-mono text-[11px] text-muted-foreground">{project.rootPath}</span>
-                        </span>
-                      </DropdownMenuItem>
-                    ))}
-                    {snapshot.projects.some((project) => project.available) && <DropdownMenuSeparator />}
-                    <DropdownMenuItem className="text-xs" onClick={() => void (async () => {
-                      const project = await addGodotProject(true);
-                      if (project) await addSelectionToGodot(project.id, project.name, project.rootPath);
-                    })()}>
-                      <Plus /> Add Godot project…
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+              {selection.kind !== "removed" && activeProject?.available && (
+                <Button type="button" variant="outline" size="sm" className="rounded-md" aria-label={`Review export to ${activeProject.name}`} title={`Export to ${activeProject.name}`} onClick={() => void addSelectionToGodot(activeProject.id)}>
+                  <Gamepad2 /> <span className="max-[1150px]:hidden">Export</span>
+                </Button>
               )}
-              <Button
-                type="button"
-                variant={selection.kind === "removed" ? "outline" : "ghost"}
-                size="sm"
-                className={cn("rounded-md", selection.kind !== "removed" && "text-destructive hover:text-destructive")}
-                aria-label={selection.kind === "removed" ? "Restore assets" : selection.kind === "project" ? "Remove assets from project" : "Remove assets from Lootbox"}
-                title={selection.kind === "removed" ? "Restore" : selection.kind === "project" ? "Remove from project" : "Remove from Lootbox"}
-                onClick={() => selection.kind === "removed" ? restoreAsset(selectedAsset) : requestDisplayedAssetRemoval(selectedAsset)}
-              >
-                {selection.kind === "removed"
-                  ? <><ArchiveRestore /> <span className="max-[1150px]:hidden">Restore</span></>
-                  : selection.kind === "project"
-                    ? <><FolderMinus /> <span className="max-[1150px]:hidden">Remove</span></>
-                    : <><Trash2 /> <span className="max-[1150px]:hidden">Remove</span></>}
-              </Button>
+              {(selection.kind === "removed" || selection.kind === "project" || activeProjectId === null) && (
+                <Button
+                  type="button"
+                  variant={selection.kind === "removed" ? "outline" : "ghost"}
+                  size="sm"
+                  className={cn("rounded-md", selection.kind !== "removed" && "text-destructive hover:text-destructive")}
+                  aria-label={selection.kind === "removed" ? "Restore assets" : selection.kind === "project" ? "Remove assets from project" : "Remove assets from Lootbox"}
+                  title={selection.kind === "removed" ? "Restore" : selection.kind === "project" ? "Remove from project" : "Remove from Lootbox"}
+                  onClick={() => selection.kind === "removed" ? restoreAsset(selectedAsset) : requestDisplayedAssetRemoval(selectedAsset)}
+                >
+                  {selection.kind === "removed"
+                    ? <><ArchiveRestore /> <span className="max-[1150px]:hidden">Restore</span></>
+                    : selection.kind === "project"
+                      ? <><FolderMinus /> <span className="max-[1150px]:hidden">Remove</span></>
+                      : <><Trash2 /> <span className="max-[1150px]:hidden">Remove</span></>}
+                </Button>
+              )}
               <Button type="button" variant="ghost" size="icon-sm" className="rounded-md text-muted-foreground" onClick={clearAssetSelection} aria-label="Clear selection" title="Clear selection">
                 <X />
               </Button>
@@ -1874,7 +2100,7 @@ function App() {
                     <FolderOpen /> Open project folder
                   </DropdownMenuItem>
                 )}
-                {selection.kind !== "project" && (
+                {activeProjectId === null && (selectedPack || selection.kind === "collection") && (
                   <DropdownMenuItem
                     variant="destructive"
                     className="rounded-sm text-xs"
@@ -1889,7 +2115,7 @@ function App() {
         </div>
 
         <div
-          ref={assetScrollRef}
+          ref={setAssetScrollRef}
           data-asset-browser
           className="quiet-scrollbar min-h-0 flex-1 overflow-y-auto"
           role={assets.length > 0 ? "listbox" : undefined}
@@ -1958,9 +2184,9 @@ function App() {
                   <div
                     key={virtualRow.key}
                     className={cn(
-                      "absolute top-0",
+                      "absolute top-0 left-0",
                       view === "grid"
-                        ? "grid gap-x-3 px-4"
+                        ? "grid w-full gap-x-3 px-4"
                         : "right-2 left-2",
                     )}
                     style={{
@@ -1990,6 +2216,7 @@ function App() {
                         onRestore={restoreAsset}
                         removed={selection.kind === "removed"}
                         projectAsset={selection.kind === "project"}
+                        allowRemove={selection.kind === "removed" || selection.kind === "project" || activeProjectId === null}
                         selectionCount={selectedIds.has(asset.id) ? selectedIds.size : 1}
                         dragPaths={selectedIds.has(asset.id) ? selectedDragPaths : [asset.absolutePath]}
                         onCopyPath={copyAssetPath}
@@ -2010,11 +2237,13 @@ function App() {
           ) : (
             <div className="grid h-full min-h-64 place-items-center">
               {selection.kind === "removed" ? (
-                <EmptyState icon={ArchiveRestore} title="No removed assets" description="Removed assets from this pack appear here." />
+                <EmptyState icon={ArchiveRestore} title="No removed assets" description={selection.packId === undefined ? "Assets removed from Lootbox appear here." : "Removed assets from this pack appear here."} />
+              ) : selection.kind === "missing" ? (
+                <EmptyState icon={FolderCog} title="No missing files" description={selection.packId === undefined ? "Missing source files across the library appear here." : "Missing source files from this pack appear here."} />
               ) : selection.kind === "duplicates" ? (
                 <EmptyState icon={Copy} title={snapshot.hashingAssets ? "Checking file contents" : "No duplicate files"} description={snapshot.hashingAssets ? "This view updates when the check finishes." : "No indexed files have matching contents."} />
               ) : selection.kind === "project" ? (
-                <EmptyState icon={Gamepad2} title="No project assets" description="Use Add to Godot from an asset selection." />
+                <EmptyState icon={Gamepad2} title="No project assets" description="Select library assets and export them to the active project." />
               ) : snapshot.totalAssets === 0 ? (
                 <EmptyState icon={FolderPlus} title="No asset packs" description="Import folders to build a local catalog. Lootbox indexes them in place and never modifies source files." action={{ label: "Import packs", onClick: () => void importPack() }} acknowledgment="archive" />
               ) : (
@@ -2023,6 +2252,8 @@ function App() {
             </div>
           )}
         </div>
+        </>
+        )}
       </main>
 
       <div
@@ -2219,10 +2450,18 @@ function App() {
                 <DialogTitle className="text-sm">Review Godot export</DialogTitle>
                 <DialogDescription className="sr-only">Choose model formats and confirm the export contents.</DialogDescription>
               </DialogHeader>
-              {!godotExport?.preview ? (
+              {!godotExport?.preview ? godotExport?.loading ? (
                 <div className="space-y-3 py-6 text-center" role="status" aria-live="polite">
                   <LoaderCircle className="mx-auto size-5 animate-spin text-primary" />
                   <p className="text-xs text-muted-foreground">Checking related files and destination conflicts…</p>
+                </div>
+              ) : (
+                <div className="space-y-3 rounded-md border border-destructive/35 bg-destructive/5 p-4 text-xs">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+                    <div><p className="font-medium">The export review could not be prepared.</p><p className="mt-1 text-muted-foreground">Check that the active project and source files are available, then retry.</p></div>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" onClick={() => godotExport && void addSelectionToGodot(godotExport.project.id)}>Retry review</Button>
                 </div>
               ) : (
                 <>
@@ -2390,20 +2629,6 @@ function App() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={godotPickerOpen} onOpenChange={setGodotPickerOpen}>
-        <DialogContent className="gap-4 sm:max-w-sm">
-          <DialogHeader className="gap-1"><DialogTitle className="text-sm">Choose Godot project</DialogTitle><DialogDescription className="text-xs">Review the destination and included files before export.</DialogDescription></DialogHeader>
-          <div className="space-y-1">
-            {snapshot.projects.filter((project) => project.available).map((project) => (
-              <Button key={project.id} type="button" variant="outline" className="h-auto w-full justify-start rounded-sm px-3 py-2 text-left" onClick={() => { setGodotPickerOpen(false); void addSelectionToGodot(project.id); }}>
-                <Gamepad2 className="shrink-0" /><span className="min-w-0"><span className="block truncate text-xs">{project.name}</span><span className="block truncate text-[11px] font-normal text-muted-foreground">{project.rootPath}</span></span>
-              </Button>
-            ))}
-            <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => void (async () => { const project = await addGodotProject(true); if (project) { setGodotPickerOpen(false); await addSelectionToGodot(project.id, project.name, project.rootPath); } })()}><Plus /> Add Godot project…</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       <AlertDialog open={pendingBulkMutation !== null} onOpenChange={(open) => { if (!open) setPendingBulkMutation(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -2452,6 +2677,23 @@ function App() {
                 Cancel
               </Button>
               <Button type="submit" size="sm">{addSelectionToNewCollection ? "Create and add" : "Create collection"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={savingView} onOpenChange={setSavingView}>
+        <DialogContent className="gap-4 sm:max-w-xs">
+          <DialogHeader className="gap-1">
+            <DialogTitle className="text-sm">Save current view</DialogTitle>
+            <DialogDescription className="text-xs">Keeps this scope, search, filters, and sorting together.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={saveCurrentView} className="space-y-3">
+            <label className="block text-xs font-medium text-muted-foreground">View name</label>
+            <Input value={savedViewName} onChange={(event) => setSavedViewName(event.target.value)} autoFocus aria-label="Saved view name" className="text-xs" />
+            <DialogFooter>
+              <Button type="button" variant="outline" size="sm" onClick={() => setSavingView(false)}>Cancel</Button>
+              <Button type="submit" size="sm" disabled={!savedViewName.trim()}>Save view</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -2558,11 +2800,23 @@ function App() {
             <FilterSelect label="Minimum resolution" value={filterDraft.minWidth} placeholder="Any resolution" options={[256, 512, 1024, 2048, 4096, 8192].map((value) => ({ value: String(value), label: `${value} × ${value}+` }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, minWidth: value }))} />
             <FilterSelect className="col-span-2" label="Classification confidence" value={filterDraft.minConfidence} placeholder="Any confidence" options={[{ value: "80", label: "Needs review · 80% or lower" }, { value: "60", label: "Uncertain · 60% or lower" }]} onValueChange={(value) => setFilterDraft((current) => ({ ...current, minConfidence: value }))} />
             <FilterSelect className="col-span-2" label="File status" value={filterDraft.status} placeholder="Available files" options={[{ value: "missing", label: "Missing files" }]} onValueChange={(value) => setFilterDraft((current) => ({ ...current, status: value }))} />
+            <FilterSelect
+              className="col-span-2"
+              label="Project usage"
+              value={filterDraft.projectUsage}
+              placeholder="Any project usage"
+              options={[
+                ...(activeProject ? [{ value: "active", label: `Used in ${activeProject.name}` }] : []),
+                { value: "unused", label: "Not used by any project" },
+              ]}
+              onValueChange={(value) => setFilterDraft((current) => ({ ...current, projectUsage: value }))}
+            />
           </div>
           <DialogFooter>
             <Button type="button" variant="ghost" size="sm" onClick={() => setFilterDraft({ ...clearedFilters })}>Reset</Button>
             <Button type="button" size="sm" onClick={() => {
               setFilters(filterDraft);
+              setActiveSavedViewId(null);
               setFiltersOpen(false);
             }}>Apply filters</Button>
           </DialogFooter>
@@ -2580,7 +2834,7 @@ function App() {
               ["Ctrl Shift F", "Filters"],
               ["Ctrl A", "Select all results"],
               ["G / L", "Grid / list view"],
-              ["Ctrl E", "Review Godot export"],
+              ["Ctrl E", "Export to active project"],
               ["T", "Add a tag to selection"],
               ["Ctrl Shift C", "New collection from selection"],
               ["↑ ↓ ← →", "Navigate assets"],
@@ -2588,8 +2842,8 @@ function App() {
               ["Ctrl + click", "Toggle selection"],
               ["Enter", "Open selected asset"],
               ["Space", "Play or pause audio"],
-              ["Delete", "Remove from Lootbox"],
-              ["Esc", "Clear selection"],
+              ["Delete", activeProject ? "Remove from active project view" : "Remove from Lootbox"],
+              ["Ctrl Shift A", "Clear selection"],
               ["?", "Show shortcuts"],
             ].map(([keys, action]) => (
               <div key={keys} className="contents">
@@ -2770,7 +3024,6 @@ function App() {
               size="xs"
               className="h-7 text-[11px] text-muted-foreground"
               onClick={() => void cancelImports().catch((caught) => reportError(caught, "cancel-import"))}
-              disabled={!activeImportJobId}
             >
               Cancel imports
             </Button>

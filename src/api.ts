@@ -14,6 +14,7 @@ import type {
   LibrarySnapshot,
   PackSummary,
   ProjectSummary,
+  ProjectStatus,
   GodotExportResult,
   GodotExportPreview,
   GodotProjectRemovalPreview,
@@ -97,8 +98,12 @@ export const api = {
     invoke<void>("delete_collection", { collectionId }),
   addGodotProject: (path: string) =>
     invoke<ProjectSummary>("add_godot_project", { path }),
+  relocateGodotProject: (projectId: number, path: string) =>
+    invoke<ProjectSummary>("relocate_godot_project", { projectId, path }),
   removeProject: (projectId: number) =>
     invoke<void>("remove_project", { projectId }),
+  projectStatus: (projectId: number) =>
+    invoke<ProjectStatus>("get_project_status", { projectId }),
   previewAssetsToGodot: (projectId: number, assetIds: number[], modelFormats?: string[] | null) =>
     invoke<GodotExportPreview>("preview_assets_to_godot", {
       projectId,

@@ -14,8 +14,11 @@ Version `0.4.0` includes:
 - Reversible name, date, size, and type sorting
 - SHA-256 content identities with cross-pack duplicate discovery
 - Godot project registration and multi-asset export to `res://assets/lootbox`
+- Active-project workspaces: select one Godot project as the current export and removal context, or return to Library mode
 - Dependency-aware Godot exports that include grouped texture maps and model resources
-- Idempotent project updates and a generated export manifest
+- Idempotent project updates, a generated export manifest, export history, and source/project drift checks
+- A Library Health view for missing files, recoverable removals, disconnected roots, and active-project status
+- Saved views that retain scope, search, filters, project usage, and sorting
 - A redesigned adaptive workspace that gives browsing the full window until details are needed
 - Visible bulk-selection actions, removable filter chips, and draft-and-apply filtering
 - Richer grid and list cards with format, size, map, resolution, and duplicate context
@@ -26,7 +29,7 @@ Version `0.4.0` includes:
 - Broad format classification with safe fallback cards
 - Tags and collections
 - Bulk tags, collections, classification corrections, and custom grouping
-- Filters for format, map role, tags, resolution, confidence, and missing files
+- Filters for format, map role, tags, resolution, confidence, missing files, and project usage
 - Versioned thumbnail cache cleanup, limits, and regeneration
 - Rotating diagnostics with visible model-preview errors
 - Open, reveal, copy-path, and external drag data
@@ -58,7 +61,7 @@ The production frontend is built into `dist/`; native executables and installers
 
 ## Storage and privacy
 
-Lootbox does not upload assets or modify imported folders. It stores a local SQLite index, rotating metadata backups, diagnostics, and generated thumbnails in the operating system's application-data directory under the identifier `com.lootbox.desktop`. Forgetting a pack removes only its Lootbox index entries. Files missing during a rescan remain recoverable in the Missing items view until explicitly purged. “Add to Godot” is the explicit exception: it copies the selected assets and their known dependencies into the chosen project's `assets/lootbox` folder and writes `lootbox-manifest.json` there.
+Lootbox does not upload assets or modify imported folders. It stores a local SQLite index, rotating metadata backups, diagnostics, and generated thumbnails in the operating system's application-data directory under the identifier `com.lootbox.desktop`. Forgetting a pack removes only its Lootbox index entries. Files missing during a rescan remain recoverable in the Missing items view until explicitly purged. Exporting to the active Godot project is the explicit exception: it copies selected assets and their known dependencies into that project's `assets/lootbox` folder and writes `lootbox-manifest.json` there.
 
 ## Project structure
 

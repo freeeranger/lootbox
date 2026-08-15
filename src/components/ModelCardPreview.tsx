@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as THREE from "three";
+import { LoaderCircle } from "lucide-react";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { api } from "../api";
 import type { Asset } from "../types";
@@ -204,7 +205,11 @@ export function ModelCardPreview({ asset, iconSize, onError }: { asset: Asset; i
           onError?.(new Error(`Generated model thumbnail could not be displayed for ${asset.relativePath}`));
         }} />
       ) : (
-        <AssetTypeIcon type="model" size={iconSize} />
+        <span className="relative grid size-full place-items-center">
+          <AssetTypeIcon type="model" size={iconSize} />
+          <LoaderCircle className="absolute right-2 bottom-2 size-3 animate-spin text-primary/70" aria-hidden="true" />
+          <span className="sr-only">Preparing model preview</span>
+        </span>
       )}
     </span>
   );

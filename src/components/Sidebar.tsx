@@ -1,7 +1,9 @@
 import {
   Archive,
   ArchiveRestore,
+  Bookmark,
   Box,
+  Check,
   Copy,
   File,
   FileArchive,
@@ -11,6 +13,7 @@ import {
   FolderOpen,
   FolderPlus,
   Gamepad2,
+  HeartPulse,
   Image,
   Keyboard,
   Layers3,
@@ -19,12 +22,14 @@ import {
   Plus,
   Pencil,
   RefreshCw,
+  Search,
   Settings,
   Trash2,
   Type,
   Video,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -40,7 +45,9 @@ import type {
   PackSummary,
   ProjectSummary,
 } from "../types";
+import type { SavedAssetView } from "../savedViews";
 import lootboxIcon from "../../src-tauri/icons/icon.svg";
+import { useMemo, useState } from "react";
 
 const typeMetadata: Record<AssetType, { label: string; icon: typeof Image }> = {
   image: { label: "Images", icon: Image },
@@ -59,7 +66,15 @@ interface Props {
   snapshot: LibrarySnapshot;
   selection: LibrarySelection;
   creatingCollection: boolean;
+  activeProjectId: number | null;
+  activeProjectAttention: number;
+  savedViews: SavedAssetView[];
+  activeSavedViewId: string | null;
   onSelect: (selection: LibrarySelection) => void;
+  onActivateProject: (project: ProjectSummary | null) => void;
+  onRelocateProject: (project: ProjectSummary) => void;
+  onOpenSavedView: (view: SavedAssetView) => void;
+  onDeleteSavedView: (view: SavedAssetView) => void;
   onImport: () => void;
   onStartCollection: () => void;
   onRenamePack: (pack: PackSummary) => void;
@@ -79,7 +94,7 @@ interface Props {
 
 function isSelected(current: LibrarySelection, candidate: LibrarySelection) {
   if (current.kind !== candidate.kind) return false;
-  if (current.kind === "all" || current.kind === "duplicates") return true;
+  if (current.kind === "all" || current.kind === "health" || current.kind === "duplicates") return true;
   if (current.kind === "type") {
     return current.assetType === (candidate as typeof current).assetType;
   }
@@ -107,13 +122,14 @@ interface NavItemProps {
   icon: typeof Library;
   label: string;
   description?: string;
-  count: number;
+  count?: number;
   title?: string;
   onClick: () => void;
   warning?: boolean;
+  semantic?: "page" | "workspace";
 }
 
-function NavItem({ active, icon: Icon, label, description, count, title, onClick, warning }: NavItemProps) {
+function NavItem({ active, icon: Icon, label, description, count, title, onClick, warning, semantic = "page" }: NavItemProps) {
   return (
     <Button
       type="button"
@@ -126,16 +142,19 @@ function NavItem({ active, icon: Icon, label, description, count, title, onClick
       )}
       onClick={onClick}
       title={title}
-      aria-current={active ? "page" : undefined}
+      aria-current={active && semantic === "page" ? "page" : undefined}
+      aria-pressed={semantic === "workspace" ? active : undefined}
     >
       <Icon className={cn("size-3.5", warning && "text-destructive")} />
       <span className="min-w-0 flex-1 text-left">
         <span className="block truncate">{label}</span>
-        {description && <span className="block truncate font-mono text-[11px] leading-3 text-muted-foreground/70">{description}</span>}
+        {description && <span className="block truncate font-mono text-xs leading-4 text-muted-foreground">{description}</span>}
       </span>
-      <span className="font-mono text-[11px] text-muted-foreground/70">
-        {count > 9999 ? "9k+" : count.toLocaleString()}
-      </span>
+      {count !== undefined && (
+        <span className="font-mono text-xs text-muted-foreground">
+          {count > 9999 ? "9k+" : count.toLocaleString()}
+        </span>
+      )}
     </Button>
   );
 }
@@ -144,7 +163,15 @@ export function Sidebar({
   snapshot,
   selection,
   creatingCollection,
+  activeProjectId,
+  activeProjectAttention,
+  savedViews,
+  activeSavedViewId,
   onSelect,
+  onActivateProject,
+  onRelocateProject,
+  onOpenSavedView,
+  onDeleteSavedView,
   onImport,
   onStartCollection,
   onRenamePack,
@@ -161,6 +188,19 @@ export function Sidebar({
   onSettings,
   onShortcuts,
 }: Props) {
+  const [sidebarQuery, setSidebarQuery] = useState("");
+  const normalizedSidebarQuery = sidebarQuery.trim().toLocaleLowerCase();
+  const filteredPacks = useMemo(() => snapshot.packs.filter((pack) =>
+    !normalizedSidebarQuery || `${pack.name} ${pack.rootPath}`.toLocaleLowerCase().includes(normalizedSidebarQuery),
+  ), [normalizedSidebarQuery, snapshot.packs]);
+  const filteredCollections = useMemo(() => snapshot.collections.filter((collection) =>
+    !normalizedSidebarQuery || collection.name.toLocaleLowerCase().includes(normalizedSidebarQuery),
+  ), [normalizedSidebarQuery, snapshot.collections]);
+  const filteredSavedViews = useMemo(() => savedViews.filter((view) =>
+    !normalizedSidebarQuery || view.name.toLocaleLowerCase().includes(normalizedSidebarQuery),
+  ), [normalizedSidebarQuery, savedViews]);
+  const showSidebarSearch = snapshot.packs.length + snapshot.collections.length + savedViews.length > 16;
+
   return (
     <aside className="flex min-w-0 flex-col overflow-hidden border-r bg-sidebar text-sidebar-foreground">
       <div className="shrink-0 px-3 pt-3 pb-2">
@@ -178,9 +218,70 @@ export function Sidebar({
           <FolderPlus className="size-3.5" />
           Import packs
         </Button>
+        {showSidebarSearch && (
+          <div className="relative mt-2">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3 -translate-y-1/2 text-muted-foreground" />
+            <Input value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} className="h-8 bg-muted/15 pr-2 pl-7 text-xs" placeholder="Filter sidebar" aria-label="Filter packs, collections, and saved views" />
+          </div>
+        )}
       </div>
 
       <nav className="quiet-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto px-2.5 py-3" aria-label="Asset library">
+        <section>
+          <h2 className="mb-1 px-2 text-[11px] font-medium text-muted-foreground">Workspace</h2>
+          <div className="space-y-0.5">
+            <NavItem
+              active={activeProjectId === null}
+              icon={Library}
+              label="Library mode"
+              description="No project target"
+              count={snapshot.totalAssets}
+              semantic="workspace"
+              onClick={() => onActivateProject(null)}
+            />
+            {snapshot.projects.map((project) => (
+              <ContextMenu key={project.id}>
+                <ContextMenuTrigger className="contents">
+                  <NavItem
+                    active={activeProjectId === project.id}
+                    icon={project.available ? Gamepad2 : FolderCog}
+                    label={project.name}
+                    description={project.rootPath}
+                    count={project.assetCount}
+                    title={project.available ? `Work in ${project.name}` : `Missing · ${project.rootPath}`}
+                    warning={!project.available}
+                    semantic="workspace"
+                    onClick={() => onActivateProject(project)}
+                  />
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  {project.available ? (
+                    <>
+                      <ContextMenuItem onClick={() => onActivateProject(project)}>
+                        <Check /> Work in this project
+                      </ContextMenuItem>
+                      <ContextMenuItem onClick={() => onOpenProject(project)}>
+                        <FolderOpen /> Open project folder
+                      </ContextMenuItem>
+                    </>
+                  ) : (
+                    <ContextMenuItem onClick={() => onRelocateProject(project)}>
+                      <FolderCog /> Fix project location
+                    </ContextMenuItem>
+                  )}
+                  <ContextMenuSeparator />
+                  <ContextMenuItem variant="destructive" onClick={() => onForgetProject(project)}>
+                    <Trash2 /> Disconnect project…
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
+            ))}
+            <button type="button" className="w-full rounded-md px-2 py-2 text-left text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground" onClick={onAddProject}>
+              <span className="flex items-center gap-2"><Plus className="size-3.5" /> Add Godot project…</span>
+            </button>
+          </div>
+        </section>
+
         <section>
           <h2 className="mb-1 px-2 text-[11px] font-medium text-muted-foreground">Library</h2>
           <div className="space-y-0.5">
@@ -191,6 +292,23 @@ export function Sidebar({
               count={snapshot.totalAssets}
               onClick={() => onSelect({ kind: "all" })}
             />
+            <NavItem
+              active={isSelected(selection, { kind: "health" })}
+              icon={HeartPulse}
+              label="Library health"
+              count={snapshot.missingAssets + snapshot.removedAssets + snapshot.packs.filter((pack) => !pack.available).length + snapshot.projects.filter((project) => !project.available).length + activeProjectAttention}
+              warning={snapshot.missingAssets > 0 || snapshot.packs.some((pack) => !pack.available) || snapshot.projects.some((project) => !project.available) || activeProjectAttention > 0}
+              onClick={() => onSelect({ kind: "health" })}
+            />
+            {activeProjectId !== null && (
+              <NavItem
+                active={isSelected(selection, { kind: "project", projectId: activeProjectId })}
+                icon={Gamepad2}
+                label="Project assets"
+                count={snapshot.projects.find((project) => project.id === activeProjectId)?.assetCount ?? 0}
+                onClick={() => onSelect({ kind: "project", projectId: activeProjectId })}
+              />
+            )}
             <NavItem
               active={isSelected(selection, { kind: "duplicates" })}
               icon={Copy}
@@ -217,67 +335,9 @@ export function Sidebar({
         </section>
 
         <section>
-          <div className="mb-1 flex h-6 items-center justify-between px-2">
-            <h2 className="text-[11px] font-medium text-muted-foreground">Godot projects</h2>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              className="rounded-sm text-muted-foreground"
-              onClick={onAddProject}
-              aria-label="Add Godot project"
-              title="Add Godot project"
-            >
-              <Plus className="size-3" />
-            </Button>
-          </div>
-          <div className="space-y-0.5">
-            {snapshot.projects.map((project) => {
-              const candidate: LibrarySelection = { kind: "project", projectId: project.id };
-              return (
-                <ContextMenu key={project.id}>
-                  <ContextMenuTrigger className="contents">
-                    <NavItem
-                      active={isSelected(selection, candidate)}
-                      icon={project.available ? Gamepad2 : FolderCog}
-                      label={project.name}
-                      description={project.rootPath}
-                      count={project.assetCount}
-                      title={project.available ? project.rootPath : `Missing · ${project.rootPath}`}
-                      warning={!project.available}
-                      onClick={() => onSelect(candidate)}
-                    />
-                  </ContextMenuTrigger>
-                  <ContextMenuContent>
-                    <ContextMenuItem
-                      disabled={!project.available}
-                      onClick={() => onOpenProject(project)}
-                    >
-                      <FolderOpen /> Open project folder
-                    </ContextMenuItem>
-                    <ContextMenuSeparator />
-                    <ContextMenuItem
-                      variant="destructive"
-                      onClick={() => onForgetProject(project)}
-                    >
-                      <Trash2 /> Disconnect project…
-                    </ContextMenuItem>
-                  </ContextMenuContent>
-                </ContextMenu>
-              );
-            })}
-            {snapshot.projects.length === 0 && (
-              <button type="button" className="w-full rounded-md px-2 py-2 text-left text-[11px] text-muted-foreground hover:bg-sidebar-accent hover:text-foreground" onClick={onAddProject}>
-                Add a Godot project…
-              </button>
-            )}
-          </div>
-        </section>
-
-        <section>
           <h2 className="mb-1 px-2 text-[11px] font-medium text-muted-foreground">Packs</h2>
           <div className="space-y-0.5">
-            {snapshot.packs.map((pack) => {
+            {filteredPacks.map((pack) => {
               const candidate: LibrarySelection = { kind: "pack", packId: pack.id };
               return (
                 <ContextMenu key={pack.id}>
@@ -332,21 +392,45 @@ export function Sidebar({
                         </span>
                       )}
                     </ContextMenuItem>
-                    {pack.missingAssetCount > 0 && (
+                    {pack.missingAssetCount > 0 && activeProjectId === null && (
                       <ContextMenuItem variant="destructive" onClick={() => onPurgeMissing(pack)}>
                         <Trash2 /> Purge missing records
                       </ContextMenuItem>
                     )}
-                    <ContextMenuSeparator />
-                    <ContextMenuItem variant="destructive" onClick={() => onForgetPack(pack)}>
-                      <Trash2 /> Forget pack
-                    </ContextMenuItem>
+                    {activeProjectId === null && (
+                      <>
+                        <ContextMenuSeparator />
+                        <ContextMenuItem variant="destructive" onClick={() => onForgetPack(pack)}>
+                          <Trash2 /> Forget pack
+                        </ContextMenuItem>
+                      </>
+                    )}
                   </ContextMenuContent>
                 </ContextMenu>
               );
             })}
           </div>
         </section>
+
+        {savedViews.length > 0 && (
+          <section>
+            <h2 className="mb-1 px-2 text-[11px] font-medium text-muted-foreground">Saved views</h2>
+            <div className="space-y-0.5">
+              {filteredSavedViews.map((view) => (
+                <ContextMenu key={view.id}>
+                  <ContextMenuTrigger className="contents">
+                    <NavItem active={activeSavedViewId === view.id} icon={Bookmark} label={view.name} onClick={() => onOpenSavedView(view)} />
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem onClick={() => onOpenSavedView(view)}><Bookmark /> Open saved view</ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem variant="destructive" onClick={() => onDeleteSavedView(view)}><Trash2 /> Delete saved view</ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section>
           <div className="mb-1 flex h-6 items-center justify-between px-2">
@@ -365,7 +449,7 @@ export function Sidebar({
             </Button>
           </div>
           <div className="space-y-0.5">
-            {snapshot.collections.map((collection) => {
+            {filteredCollections.map((collection) => {
               const candidate: LibrarySelection = {
                 kind: "collection",
                 collectionId: collection.id,

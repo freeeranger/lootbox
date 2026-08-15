@@ -279,6 +279,8 @@ struct TypeCount {
 struct LibrarySnapshot {
     total_assets: i64,
     duplicate_assets: i64,
+    removed_assets: i64,
+    missing_assets: i64,
     hashing_assets: bool,
     packs: Vec<PackSummary>,
     collections: Vec<CollectionSummary>,
@@ -294,6 +296,33 @@ struct ProjectSummary {
     root_path: String,
     asset_count: i64,
     available: bool,
+    last_exported_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectExportRun {
+    id: i64,
+    exported_at: String,
+    selected_count: i64,
+    copied_count: i64,
+    unchanged_count: i64,
+    model_formats: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectStatus {
+    project_id: i64,
+    destination: String,
+    tracked_files: i64,
+    up_to_date_files: i64,
+    source_changed_files: i64,
+    source_missing_files: i64,
+    project_modified_files: i64,
+    project_missing_files: i64,
+    last_exported_at: Option<String>,
+    runs: Vec<ProjectExportRun>,
 }
 
 #[derive(Debug, Serialize)]
@@ -445,6 +474,7 @@ struct AssetQuery {
     min_confidence: Option<i64>,
     missing: Option<bool>,
     project_id: Option<i64>,
+    unused_by_projects: Option<bool>,
     duplicates_only: Option<bool>,
 }
 
@@ -473,7 +503,7 @@ struct ClassificationOverrideSnapshot {
     existed: bool,
 }
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const IMAGE_THUMBNAIL_VERSION: i64 = 2;
 const MODEL_THUMBNAIL_VERSION: i64 = 3;
 const DEFAULT_CACHE_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
@@ -613,6 +643,18 @@ fn initialize_database(connection: &Connection) -> Result<()> {
             PRIMARY KEY(project_id, asset_id)
         );
         CREATE INDEX IF NOT EXISTS project_exports_asset_idx ON project_exports(asset_id);
+
+        CREATE TABLE IF NOT EXISTS project_export_runs (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            exported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            selected_count INTEGER NOT NULL,
+            copied_count INTEGER NOT NULL,
+            unchanged_count INTEGER NOT NULL,
+            model_formats TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS project_export_runs_project_idx
+            ON project_export_runs(project_id, exported_at DESC);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS assets_fts USING fts5(
             asset_id UNINDEXED,
@@ -2415,6 +2457,15 @@ fn get_library_snapshot(state: State<'_, AppState>) -> Result<LibrarySnapshot> {
         [],
         |row| row.get(0),
     )?;
+    let removed_assets = connection.query_row(
+        "SELECT COUNT(*) FROM assets WHERE is_primary = 1 AND excluded = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let missing_assets =
+        connection.query_row("SELECT COUNT(*) FROM assets WHERE missing = 1", [], |row| {
+            row.get(0)
+        })?;
 
     let packs = {
         let mut statement = connection.prepare(
@@ -2475,7 +2526,8 @@ fn get_library_snapshot(state: State<'_, AppState>) -> Result<LibrarySnapshot> {
         let mut statement = connection.prepare(
             r#"
             SELECT project.id, project.name, project.root_path,
-                   COUNT(DISTINCT CASE WHEN asset.is_primary = 1 AND asset.missing = 0 THEN asset.id END)
+                   COUNT(DISTINCT CASE WHEN asset.is_primary = 1 AND asset.missing = 0 THEN asset.id END),
+                   MAX(exported.exported_at)
             FROM projects project
             LEFT JOIN project_exports exported ON exported.project_id = project.id
             LEFT JOIN assets asset ON asset.id = exported.asset_id
@@ -2492,6 +2544,7 @@ fn get_library_snapshot(state: State<'_, AppState>) -> Result<LibrarySnapshot> {
                     available: Path::new(&root_path).join("project.godot").is_file(),
                     root_path,
                     asset_count: row.get(3)?,
+                    last_exported_at: row.get(4)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -2516,6 +2569,8 @@ fn get_library_snapshot(state: State<'_, AppState>) -> Result<LibrarySnapshot> {
     Ok(LibrarySnapshot {
         total_assets,
         duplicate_assets,
+        removed_assets,
+        missing_assets,
         hashing_assets: state.hashing_library.load(Ordering::Acquire),
         packs,
         collections,
@@ -2601,6 +2656,19 @@ fn asset_query_filter(request: &AssetQuery) -> (String, Vec<rusqlite::types::Val
             )"#,
         );
         values.push(project_id.into());
+    }
+    if request.unused_by_projects.unwrap_or(false) {
+        conditions.push(
+            r#"NOT EXISTS (
+                SELECT 1
+                FROM project_exports any_export
+                JOIN assets exported_asset ON exported_asset.id = any_export.asset_id
+                WHERE exported_asset.id = a.id OR
+                  (a.group_key IS NOT NULL
+                    AND exported_asset.pack_id = a.pack_id
+                    AND exported_asset.group_key = a.group_key)
+            )"#,
+        );
     }
     if request.duplicates_only.unwrap_or(false) {
         conditions.push("a.content_hash IS NOT NULL AND (SELECT COUNT(*) FROM assets duplicate WHERE duplicate.content_hash = a.content_hash AND duplicate.missing = 0) > 1");
@@ -3038,7 +3106,7 @@ fn project_summary(connection: &Connection, project_id: i64) -> Result<ProjectSu
                       AND exported_asset.group_key = primary_asset.group_key)
                   )
               )
-        )
+        ), (SELECT MAX(exported_at) FROM project_exports WHERE project_id = project.id)
         FROM projects project
         WHERE project.id = ?1
         "#,
@@ -3051,6 +3119,7 @@ fn project_summary(connection: &Connection, project_id: i64) -> Result<ProjectSu
                 available: Path::new(&root_path).join("project.godot").is_file(),
                 root_path,
                 asset_count: row.get(3)?,
+                last_exported_at: row.get(4)?,
             })
         },
     )?)
@@ -3103,6 +3172,82 @@ fn add_godot_project(path: String, state: State<'_, AppState>) -> Result<Project
 }
 
 #[tauri::command]
+fn relocate_godot_project(
+    project_id: i64,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<ProjectSummary> {
+    let root = fs::canonicalize(path)?;
+    if !root.is_dir() || !root.join("project.godot").is_file() {
+        return Err(LootboxError::InvalidGodotProject(
+            "select the folder containing project.godot".into(),
+        ));
+    }
+    let _guard = state
+        .write_queue
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut connection = state.connect()?;
+    relocate_godot_project_from_connection(&mut connection, project_id, &root)
+}
+
+fn relocate_godot_project_from_connection(
+    connection: &mut Connection,
+    project_id: i64,
+    root: &Path,
+) -> Result<ProjectSummary> {
+    let previous_root: String = connection.query_row(
+        "SELECT root_path FROM projects WHERE id = ?1",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let previous_root = PathBuf::from(previous_root);
+    let tracked_paths = {
+        let mut statement = connection
+            .prepare("SELECT asset_id, exported_path FROM project_exports WHERE project_id = ?1")?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
+    let rebased_paths = tracked_paths
+        .into_iter()
+        .map(|(asset_id, tracked_path)| {
+            let relative = Path::new(&tracked_path)
+                .strip_prefix(&previous_root)
+                .map_err(|_| {
+                    LootboxError::ProjectExport(
+                        "a tracked export path is outside the registered project".into(),
+                    )
+                })?;
+            if relative.as_os_str().is_empty() {
+                return Err(LootboxError::ProjectExport(
+                    "a tracked export path points at the project root".into(),
+                ));
+            }
+            Ok((asset_id, path_string(&root.join(relative))))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let transaction = connection.transaction()?;
+    for (asset_id, rebased_path) in rebased_paths {
+        transaction.execute(
+            "UPDATE project_exports SET exported_path = ?1 WHERE project_id = ?2 AND asset_id = ?3",
+            params![rebased_path, project_id, asset_id],
+        )?;
+    }
+    transaction.execute(
+        "UPDATE projects SET name = ?1, root_path = ?2 WHERE id = ?3",
+        params![godot_project_name(root), path_string(root), project_id],
+    )?;
+    let summary = project_summary(&transaction, project_id)?;
+    transaction.commit()?;
+    Ok(summary)
+}
+
+#[tauri::command]
 fn remove_project(project_id: i64, state: State<'_, AppState>) -> Result<()> {
     let _guard = state
         .write_queue
@@ -3112,6 +3257,120 @@ fn remove_project(project_id: i64, state: State<'_, AppState>) -> Result<()> {
         .connect()?
         .execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
     Ok(())
+}
+
+fn project_status_from_connection(
+    connection: &Connection,
+    project_id: i64,
+) -> Result<ProjectStatus> {
+    let project = project_summary(connection, project_id)?;
+    let mut tracked_files = 0;
+    let mut up_to_date_files = 0;
+    let mut source_changed_files = 0;
+    let mut source_missing_files = 0;
+    let mut project_modified_files = 0;
+    let mut project_missing_files = 0;
+
+    let mut statement = connection.prepare(
+        r#"
+        SELECT exported.exported_path, exported.content_hash,
+               asset.absolute_path, asset.missing
+        FROM project_exports exported
+        JOIN assets asset ON asset.id = exported.asset_id
+        WHERE exported.project_id = ?1
+        "#,
+    )?;
+    let rows = statement.query_map(params![project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, bool>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (exported_path, expected_hash, source_path, source_missing) = row?;
+        tracked_files += 1;
+        let expected_hash = expected_hash.as_deref();
+        let source_path = Path::new(&source_path);
+        let source_current = if source_missing || !source_path.is_file() {
+            source_missing_files += 1;
+            false
+        } else if expected_hash.is_some() && hash_file(source_path).ok().as_deref() != expected_hash
+        {
+            source_changed_files += 1;
+            false
+        } else {
+            true
+        };
+
+        let exported_path = Path::new(&exported_path);
+        let project_current = if !exported_path.is_file() {
+            project_missing_files += 1;
+            false
+        } else if expected_hash.is_some()
+            && hash_file(exported_path).ok().as_deref() != expected_hash
+        {
+            project_modified_files += 1;
+            false
+        } else {
+            true
+        };
+        if source_current && project_current {
+            up_to_date_files += 1;
+        }
+    }
+    drop(statement);
+
+    let runs = {
+        let mut statement = connection.prepare(
+            r#"
+            SELECT id, exported_at, selected_count, copied_count, unchanged_count, model_formats
+            FROM project_export_runs
+            WHERE project_id = ?1
+            ORDER BY id DESC
+            LIMIT 30
+            "#,
+        )?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                let formats: String = row.get(5)?;
+                Ok(ProjectExportRun {
+                    id: row.get(0)?,
+                    exported_at: row.get(1)?,
+                    selected_count: row.get(2)?,
+                    copied_count: row.get(3)?,
+                    unchanged_count: row.get(4)?,
+                    model_formats: serde_json::from_str(&formats).unwrap_or_default(),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
+
+    Ok(ProjectStatus {
+        project_id,
+        destination: "res://assets/lootbox".into(),
+        tracked_files,
+        up_to_date_files,
+        source_changed_files,
+        source_missing_files,
+        project_modified_files,
+        project_missing_files,
+        last_exported_at: project.last_exported_at,
+        runs,
+    })
+}
+
+#[tauri::command]
+async fn get_project_status(project_id: i64, state: State<'_, AppState>) -> Result<ProjectStatus> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = state.connect()?;
+        project_status_from_connection(&connection, project_id)
+    })
+    .await
+    .map_err(|_| LootboxError::ImportWorker)?
 }
 
 fn safe_export_relative_path(path: &str) -> Result<PathBuf> {
@@ -3163,6 +3422,36 @@ fn collision_export_path(path: &Path, asset_id: i64, attempt: usize) -> PathBuf 
         None => format!("{stem}-{suffix}"),
     };
     path.with_file_name(name)
+}
+
+fn export_destination_conflicts(
+    destination: &Path,
+    source_hash: &str,
+    tracked: Option<&(String, Option<String>)>,
+) -> bool {
+    if !destination.is_file() {
+        return false;
+    }
+    let destination_hash = hash_file(destination).ok();
+    let destination_path = path_string(destination);
+    match tracked {
+        Some((tracked_path, tracked_hash)) if tracked_path == &destination_path => {
+            tracked_hash.is_some() && destination_hash.as_deref() != tracked_hash.as_deref()
+        }
+        _ => destination_hash.as_deref() != Some(source_hash),
+    }
+}
+
+fn safe_collision_destination(
+    destination: &Path,
+    asset_id: i64,
+    source_hash: &str,
+) -> Option<PathBuf> {
+    (0..10_000)
+        .map(|attempt| collision_export_path(destination, asset_id, attempt))
+        .find(|candidate| {
+            !candidate.exists() || hash_file(candidate).ok().as_deref() == Some(source_hash)
+        })
 }
 
 struct GodotExportSelection {
@@ -3372,26 +3661,12 @@ fn preview_assets_to_godot_from_connection(
         );
         let relative = safe_export_relative_path(&relative_path)?;
         let destination = export_root.join(&pack_component).join(&relative);
-        let tracked_path: Option<String> = connection
-            .query_row(
-                "SELECT exported_path FROM project_exports WHERE project_id = ?1 AND asset_id = ?2",
-                params![project_id, asset_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if destination.is_file()
-            && tracked_path.as_deref() != Some(path_string(&destination).as_str())
-            && hash_file(&destination).ok() != hash_file(&source).ok()
-        {
+        let tracked = tracked_project_export(connection, project_id, asset_id)?;
+        let source_hash = hash_file(&source)?;
+        let mut planned_destination = destination.clone();
+        if export_destination_conflicts(&destination, &source_hash, tracked.as_ref()) {
             conflicts += 1;
-            let source_hash = hash_file(&source).ok();
-            let renamed = (0..10_000)
-                .map(|attempt| collision_export_path(&destination, asset_id, attempt))
-                .find(|candidate| {
-                    !candidate.exists()
-                        || tracked_path.as_deref() == Some(path_string(candidate).as_str())
-                        || hash_file(candidate).ok() == source_hash
-                });
+            let renamed = safe_collision_destination(&destination, asset_id, &source_hash);
             if let Some(renamed) = renamed {
                 let original_name = destination
                     .file_name()
@@ -3402,9 +3677,15 @@ fn preview_assets_to_godot_from_connection(
                     .map(|name| name.to_string_lossy())
                     .unwrap_or_default();
                 conflict_files.push(format!("{original_name} → {renamed_name}"));
+                planned_destination = renamed;
             }
         }
-        files.push(format!("{pack_component}/{}", relative.to_string_lossy()));
+        files.push(
+            planned_destination
+                .strip_prefix(&export_root)
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|_| format!("{pack_component}/{}", relative.to_string_lossy())),
+        );
     }
     files.sort();
     let selected = selection.selected;
@@ -3573,26 +3854,10 @@ fn export_assets_to_godot_from_connection(
         );
         let relative = safe_export_relative_path(&relative_path)?;
         let mut destination = export_root.join(pack_component).join(relative);
-        let tracked_path: Option<String> = connection
-            .query_row(
-                "SELECT exported_path FROM project_exports WHERE project_id = ?1 AND asset_id = ?2",
-                params![project_id, asset_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let destination_path = path_string(&destination);
-        if destination.is_file()
-            && tracked_path.as_deref() != Some(destination_path.as_str())
-            && hash_file(&destination).ok().as_ref() != Some(&hash)
-        {
+        let tracked = tracked_project_export(connection, project_id, asset_id)?;
+        if export_destination_conflicts(&destination, &hash, tracked.as_ref()) {
             let original_destination = destination;
-            destination = (0..10_000)
-                .map(|attempt| collision_export_path(&original_destination, asset_id, attempt))
-                .find(|candidate| {
-                    !candidate.exists()
-                        || tracked_path.as_deref() == Some(path_string(candidate).as_str())
-                        || hash_file(candidate).ok().as_ref() == Some(&hash)
-                })
+            destination = safe_collision_destination(&original_destination, asset_id, &hash)
                 .ok_or_else(|| {
                     LootboxError::ProjectExport(format!(
                         "could not find a safe destination for {}",
@@ -3625,6 +3890,32 @@ fn export_assets_to_godot_from_connection(
     }
 
     write_godot_manifest(connection, project_id, &project.name, &export_root)?;
+    let formats = serde_json::to_string(model_formats.unwrap_or(&[]))
+        .map_err(|error| LootboxError::ProjectExport(error.to_string()))?;
+    connection.execute(
+        r#"
+        INSERT INTO project_export_runs(
+            project_id, selected_count, copied_count, unchanged_count, model_formats
+        ) VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+        params![
+            project_id,
+            asset_ids.len() as i64,
+            copied as i64,
+            unchanged as i64,
+            formats
+        ],
+    )?;
+    connection.execute(
+        r#"
+        DELETE FROM project_export_runs
+        WHERE project_id = ?1 AND id NOT IN (
+            SELECT id FROM project_export_runs
+            WHERE project_id = ?1 ORDER BY id DESC LIMIT 100
+        )
+        "#,
+        params![project_id],
+    )?;
     Ok(GodotExportResult {
         copied,
         unchanged,
@@ -4741,7 +5032,9 @@ pub fn run() {
             set_collection_memberships,
             delete_collection,
             add_godot_project,
+            relocate_godot_project,
             remove_project,
+            get_project_status,
             preview_assets_to_godot,
             export_assets_to_godot,
             preview_remove_assets_from_godot_project,
@@ -5612,6 +5905,86 @@ mod tests {
                 .unwrap();
         assert_eq!(second.copied, 0);
         assert_eq!(second.unchanged, 2);
+
+        let status = project_status_from_connection(&connection, project_id).unwrap();
+        assert_eq!(status.tracked_files, 2);
+        assert_eq!(status.up_to_date_files, 2);
+        assert_eq!(status.runs.len(), 2);
+        assert_eq!(status.runs[0].unchanged_count, 2);
+
+        let unused = query_assets_from_connection(
+            AssetQuery {
+                unused_by_projects: Some(true),
+                ..AssetQuery::default()
+            },
+            &connection,
+        )
+        .unwrap();
+        assert_eq!(unused.total, 0);
+
+        fs::write(
+            pack.join("Materials/Brick/brick_normal.png"),
+            b"changed source",
+        )
+        .unwrap();
+        let changed_status = project_status_from_connection(&connection, project_id).unwrap();
+        assert_eq!(changed_status.source_changed_files, 1);
+        assert_eq!(changed_status.up_to_date_files, 1);
+
+        let normal_id: i64 = connection
+            .query_row(
+                "SELECT id FROM assets WHERE relative_path LIKE '%brick_normal.png'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let edited_project_path: String = connection
+            .query_row(
+                "SELECT exported_path FROM project_exports WHERE project_id = ?1 AND asset_id = ?2",
+                params![project_id, normal_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        fs::write(&edited_project_path, b"project edit").unwrap();
+        let protected_preview =
+            preview_assets_to_godot_from_connection(&connection, project_id, &[asset_id], None)
+                .unwrap();
+        assert!(protected_preview.conflicts >= 2);
+        export_assets_to_godot_from_connection(&mut connection, project_id, &[asset_id], None)
+            .unwrap();
+        assert_eq!(fs::read(&edited_project_path).unwrap(), b"project edit");
+        let replacement_path: String = connection
+            .query_row(
+                "SELECT exported_path FROM project_exports WHERE project_id = ?1 AND asset_id = ?2",
+                params![project_id, normal_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_ne!(replacement_path, edited_project_path);
+
+        let moved_project = temporary.path().join("Moved Godot Game");
+        fs::rename(&project, &moved_project).unwrap();
+        let relocated =
+            relocate_godot_project_from_connection(&mut connection, project_id, &moved_project)
+                .unwrap();
+        assert_eq!(relocated.root_path, path_string(&moved_project));
+        let relocated_paths = connection
+            .prepare("SELECT exported_path FROM project_exports WHERE project_id = ?1")
+            .unwrap()
+            .query_map(params![project_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(relocated_paths
+            .iter()
+            .all(|path| Path::new(path).starts_with(&moved_project)));
+        let relocated_status = project_status_from_connection(&connection, project_id).unwrap();
+        assert_eq!(relocated_status.tracked_files, 2);
+        assert_eq!(relocated_status.up_to_date_files, 2);
+        let removal =
+            plan_assets_from_godot_project_removal(&connection, project_id, &[asset_id]).unwrap();
+        assert_eq!(removal.preview.remove_files.len(), 2);
+        assert!(removal.preview.missing_files.is_empty());
     }
 
     #[test]

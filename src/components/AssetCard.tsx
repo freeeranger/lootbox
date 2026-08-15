@@ -41,6 +41,7 @@ interface Props {
   onRestore: (asset: Asset) => void;
   removed: boolean;
   projectAsset?: boolean;
+  allowRemove?: boolean;
   selectionCount: number;
   dragPaths: string[];
   onCopyPath: (path: string) => void;
@@ -108,6 +109,7 @@ function AssetCardComponent({
   onRestore,
   removed,
   projectAsset,
+  allowRemove = true,
   selectionCount,
   dragPaths,
   onCopyPath,
@@ -197,7 +199,7 @@ function AssetCardComponent({
               }
             }}
           />
-        ) : asset.assetType === "model" && ["glb", "gltf"].includes(asset.extension) ? (
+        ) : asset.assetType === "model" && ["glb", "gltf"].includes(asset.extension) && view === "grid" ? (
           <Suspense
             fallback={
               <span className="grid size-full place-items-center text-muted-foreground/65">
@@ -296,14 +298,14 @@ function AssetCardComponent({
           <ContextMenuItem onClick={() => onRestore(asset)}>
             <RotateCcw /> {selectionCount > 1 ? `Restore ${selectionCount} assets` : "Restore to Lootbox"}
           </ContextMenuItem>
-        ) : (
+        ) : allowRemove ? (
           <ContextMenuItem variant="destructive" onClick={() => onRemove(asset)}>
             {projectAsset ? <FolderMinus /> : <Trash2 />}
             {projectAsset
               ? selectionCount > 1 ? `Remove ${selectionCount} assets from project` : "Remove from project"
               : selectionCount > 1 ? `Remove ${selectionCount} assets` : "Remove from Lootbox"}
           </ContextMenuItem>
-        )}
+        ) : null}
       </ContextMenuContent>
     </ContextMenu>
   );

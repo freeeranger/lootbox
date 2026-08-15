@@ -8,9 +8,11 @@ web
 
 ## Users
 
-Lootbox is for indie game developers and technical artists who manage growing local libraries of downloaded game-asset packs. Its current project workflow is Godot-focused.
+Lootbox is primarily for experienced indie game developers and technical artists who manage growing local libraries of downloaded game-asset packs. It is first designed around its maker's own high-frequency workflow and other power users working repeatedly in Godot projects.
 
 Users need to find, inspect, organize, and reuse assets across scattered folders without disturbing the source packs they downloaded or purchased.
+
+In-product teaching is intentionally secondary. Concise labels, visible state, and safe recovery must make operation dependable, while longer onboarding and conceptual documentation may live outside the application.
 
 ## Product Purpose
 
@@ -29,6 +31,7 @@ Lootbox is a private, non-destructive desktop asset library: it combines local i
 - Users browse in grid or compact-list views; search names, paths, packs, and tags; filter and sort results; inspect previews and metadata; and organize assets with tags and collections.
 - Users may rescan relocated or changed packs while retaining missing-file records, tags, collections, and asset identity.
 - Godot users can register projects and explicitly export selected assets and known dependencies to `res://assets/lootbox`, with a generated manifest.
+- One registered Godot project can be the active workspace context. Export, project removal, status, and history actions target that project until the user returns to Library mode or activates another project.
 - Common actions include opening or revealing a source file, copying its path, dragging it to another application, correcting classification, and managing duplicate or missing assets.
 
 ## Capabilities and Constraints
@@ -67,6 +70,7 @@ Lootbox is a private, non-destructive desktop asset library: it combines local i
 3. Reduce the distance from discovery to use by carrying selected assets and known dependencies cleanly into a Godot project.
 4. Prefer explicit, reversible actions and visible recovery paths for imports, missing files, metadata, caches, and destructive-looking operations.
 5. Keep private asset libraries local and make product claims only when the implementation or supplied evidence supports them.
+6. Optimize repeated expert use: preserve working context, make bulk and keyboard actions predictable, and surface project/library drift without requiring the user to remember prior operations.
 
 ## Accessibility & Inclusion
 

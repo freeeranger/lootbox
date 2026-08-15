@@ -40,6 +40,29 @@ export interface ProjectSummary {
   rootPath: string;
   assetCount: number;
   available: boolean;
+  lastExportedAt: string | null;
+}
+
+export interface ProjectExportRun {
+  id: number;
+  exportedAt: string;
+  selectedCount: number;
+  copiedCount: number;
+  unchangedCount: number;
+  modelFormats: string[];
+}
+
+export interface ProjectStatus {
+  projectId: number;
+  destination: string;
+  trackedFiles: number;
+  upToDateFiles: number;
+  sourceChangedFiles: number;
+  sourceMissingFiles: number;
+  projectModifiedFiles: number;
+  projectMissingFiles: number;
+  lastExportedAt: string | null;
+  runs: ProjectExportRun[];
 }
 
 export interface GodotExportResult {
@@ -88,6 +111,8 @@ export interface TypeCount {
 export interface LibrarySnapshot {
   totalAssets: number;
   duplicateAssets: number;
+  removedAssets: number;
+  missingAssets: number;
   hashingAssets: boolean;
   packs: PackSummary[];
   collections: CollectionSummary[];
@@ -181,6 +206,7 @@ export interface AssetQuery {
   minConfidence?: number;
   missing?: boolean;
   projectId?: number;
+  unusedByProjects?: boolean;
   duplicatesOnly?: boolean;
 }
 
@@ -246,10 +272,11 @@ export interface DiagnosticEntry {
 
 export type LibrarySelection =
   | { kind: "all" }
+  | { kind: "health" }
   | { kind: "duplicates" }
   | { kind: "type"; assetType: AssetType }
   | { kind: "pack"; packId: number }
-  | { kind: "removed"; packId: number }
-  | { kind: "missing"; packId: number }
+  | { kind: "removed"; packId?: number }
+  | { kind: "missing"; packId?: number }
   | { kind: "collection"; collectionId: number }
   | { kind: "project"; projectId: number };
