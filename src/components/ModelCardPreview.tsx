@@ -15,35 +15,94 @@ const persistedThumbnails = new Map<number, string>();
 const previewCacheLimit = 48;
 const previewTimeoutMs = 20_000;
 let renderQueue: Promise<void> = Promise.resolve();
+let sharedRenderer: THREE.WebGLRenderer | null = null;
+let sharedScene: THREE.Scene | null = null;
+
+function getSharedRendererScene() {
+  if (sharedRenderer && sharedRenderer.getContext().isContextLost()) {
+    try {
+      sharedRenderer.dispose();
+    } catch {
+      // ignore disposal errors on lost context
+    }
+    sharedRenderer = null;
+    sharedScene = null;
+  }
+
+  if (!sharedRenderer) {
+    const canvas = document.createElement("canvas");
+    canvas.addEventListener("webglcontextlost", (event) => {
+      event.preventDefault();
+      try {
+        sharedRenderer?.dispose();
+      } catch {
+        // ignore
+      }
+      sharedRenderer = null;
+      sharedScene = null;
+    });
+
+    sharedRenderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+      preserveDrawingBuffer: true,
+      powerPreference: "high-performance",
+    });
+    sharedRenderer.setPixelRatio(1);
+    sharedRenderer.setSize(256, 192, false);
+    sharedRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    sharedRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    sharedRenderer.toneMappingExposure = 1.05;
+    sharedRenderer.setClearColor(0x17181b, 1);
+
+    sharedScene = new THREE.Scene();
+    sharedScene.background = new THREE.Color(0x17181b);
+    sharedScene.add(new THREE.HemisphereLight(0xffffff, 0x30343b, 2.6));
+    const key = new THREE.DirectionalLight(0xffffff, 3.5);
+    key.position.set(4, 6, 3);
+    sharedScene.add(key);
+    sharedScene.add(key.target);
+    const rim = new THREE.DirectionalLight(0xc99a45, 1.35);
+    rim.position.set(-4, 2, -4);
+    sharedScene.add(rim);
+    sharedScene.add(rim.target);
+  }
+  return { renderer: sharedRenderer, scene: sharedScene! };
+}
 
 export function resetModelPreviewCache() {
   previews.clear();
   completedPreviews.clear();
   savedThumbnails.clear();
   persistedThumbnails.clear();
+  if (sharedRenderer) {
+    try {
+      sharedRenderer.dispose();
+    } catch {
+      // ignore
+    }
+    sharedRenderer = null;
+    sharedScene = null;
+  }
 }
 
-async function renderPreview(path: string) {
-  const renderer = new THREE.WebGLRenderer({
-    antialias: true,
-    alpha: false,
-    preserveDrawingBuffer: true,
-  });
-  renderer.setPixelRatio(1);
-  renderer.setSize(384, 288, false);
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x17181b);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x30343b, 2.6));
-  const key = new THREE.DirectionalLight(0xffffff, 3.5);
-  key.position.set(4, 6, 3);
-  scene.add(key);
-  const rim = new THREE.DirectionalLight(0xc99a45, 1.35);
-  rim.position.set(-4, 2, -4);
-  scene.add(rim);
+async function renderPreview(path: string, retryOnContextLoss = true): Promise<string> {
+  const { renderer, scene } = getSharedRendererScene();
+  const gl = renderer.getContext();
+  if (gl.isContextLost()) {
+    try {
+      sharedRenderer?.dispose();
+    } catch {
+      // ignore
+    }
+    sharedRenderer = null;
+    sharedScene = null;
+    if (retryOnContextLoss) {
+      return renderPreview(path, false);
+    }
+    throw new Error("WebGL context is lost");
+  }
 
   let model: THREE.Object3D | null = null;
   try {
@@ -56,6 +115,7 @@ async function renderPreview(path: string) {
       if (child instanceof THREE.Mesh && child.visible && child.geometry.getAttribute("position")?.count > 0) renderableMeshes += 1;
     });
     if (renderableMeshes === 0) throw new Error("The model contains no renderable geometry");
+    model.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
@@ -64,20 +124,79 @@ async function renderPreview(path: string) {
     }
     const radius = Math.max(size.x, size.y, size.z) || 1;
     model.position.sub(center);
+    model.updateMatrixWorld(true);
 
     const near = Math.max(radius / 100, 0.001);
-    const camera = new THREE.PerspectiveCamera(36, 4 / 3, near, Math.max(radius * 20, near + 1));
+    const far = Math.max(radius * 20, near + 1);
+    const camera = new THREE.PerspectiveCamera(36, 4 / 3, near, far);
     camera.position.set(radius * 1.55, radius * 1.1, radius * 2.05);
     camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+    camera.updateProjectionMatrix();
+
+    if (gltf.animations.length > 0) {
+      const mixer = new THREE.AnimationMixer(model);
+      mixer.clipAction(gltf.animations[0]).play();
+      mixer.update(0.01);
+    }
+
+    renderer.setClearColor(0x17181b, 1);
+    renderer.compile(scene, camera);
     renderer.render(scene, camera);
+
+    if (gl.isContextLost()) {
+      try {
+        sharedRenderer?.dispose();
+      } catch {
+        // ignore
+      }
+      sharedRenderer = null;
+      sharedScene = null;
+      if (retryOnContextLoss) {
+        return renderPreview(path, false);
+      }
+      throw new Error("WebGL context lost while rendering model thumbnail");
+    }
+
+    // Verify rendered pixels: alpha should be 255 because alpha: true and setClearColor(0x17181b, 1) is set
+    const cornerSample = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, cornerSample);
+    if (cornerSample[3] === 0) {
+      try {
+        sharedRenderer?.dispose();
+      } catch {
+        // ignore
+      }
+      sharedRenderer = null;
+      sharedScene = null;
+      if (retryOnContextLoss) {
+        return renderPreview(path, false);
+      }
+      throw new Error("The model renderer returned an unrendered frame");
+    }
+
     const source = renderer.domElement.toDataURL("image/png");
-    if (!source.startsWith("data:image/png;base64,") || source.length < 256) {
+    if (!source.startsWith("data:image/png;base64,") || source.length < 1500) {
       throw new Error("The model renderer returned an empty thumbnail");
     }
     return source;
+  } catch (error) {
+    if (retryOnContextLoss && (gl.isContextLost() || (error instanceof Error && error.message.toLowerCase().includes("webgl")))) {
+      try {
+        sharedRenderer?.dispose();
+      } catch {
+        // ignore
+      }
+      sharedRenderer = null;
+      sharedScene = null;
+      return renderPreview(path, false);
+    }
+    throw error;
   } finally {
-    if (model) disposeModel(model);
-    renderer.dispose();
+    if (model) {
+      scene.remove(model);
+      disposeModel(model);
+    }
   }
 }
 
@@ -168,13 +287,23 @@ export async function prepareModelThumbnail(asset: Asset) {
 
 export function ModelCardPreview({ asset, iconSize, onError }: { asset: Asset; iconSize: number; onError?: (error: unknown) => void }) {
   const hostRef = useRef<HTMLSpanElement>(null);
-  const [source, setSource] = useState<string | null>(null);
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+
+  const [source, setSource] = useState<string | null>(() => {
+    const persisted = persistedThumbnails.get(asset.id);
+    return persisted ? convertFileSrc(persisted) : null;
+  });
 
   useEffect(() => {
+    const persisted = persistedThumbnails.get(asset.id);
+    if (persisted) {
+      setSource(convertFileSrc(persisted));
+      return;
+    }
     const host = hostRef.current;
     if (!host) return;
     let active = true;
-    setSource(null);
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return;
@@ -184,7 +313,7 @@ export function ModelCardPreview({ asset, iconSize, onError }: { asset: Asset; i
             if (!nextSource) return;
             if (active) setSource(nextSource);
           })
-          .catch((error) => onError?.(error));
+          .catch((error) => onErrorRef.current?.(error));
       },
       { rootMargin: "240px" },
     );
@@ -193,7 +322,7 @@ export function ModelCardPreview({ asset, iconSize, onError }: { asset: Asset; i
       active = false;
       observer.disconnect();
     };
-  }, [asset.absolutePath, asset.id, onError]);
+  }, [asset.absolutePath, asset.id]);
 
   return (
     <span ref={hostRef} className="grid size-full place-items-center text-muted-foreground/65">

@@ -73,8 +73,8 @@ function AudioCardControl({
     <button
       type="button"
       className={cn(
-        "absolute z-10 grid place-items-center rounded-full border border-border/70 bg-background/85 text-foreground shadow-sm backdrop-blur-sm hover:bg-accent",
-        view === "grid" ? "top-2 left-2 size-7" : "top-1/2 left-[25px] size-7 -translate-x-1/2 -translate-y-1/2",
+        "absolute z-10 grid place-items-center border border-border/70 bg-background/90 text-foreground shadow-xs backdrop-blur-sm transition-colors hover:bg-accent hover:border-foreground/30 cursor-pointer",
+        view === "grid" ? "top-2 left-2 size-6 rounded-sm" : "top-1/2 left-[25px] size-7 -translate-x-1/2 -translate-y-1/2 rounded-full",
       )}
       aria-label={playing ? `Pause ${asset.name}` : `Play ${asset.name}`}
       disabled={busy}
@@ -161,12 +161,12 @@ function AssetCardComponent({
             aria-setsize={optionCount}
             tabIndex={tabIndex}
             className={cn(
-              "group block w-full min-w-0 rounded-md text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60",
+              "group block w-full min-w-0 rounded-md text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60 cursor-pointer",
               view === "list" &&
-                "grid h-12 grid-cols-[34px_minmax(130px,0.5fr)_minmax(0,1fr)_84px] items-center gap-3 px-2 hover:bg-accent/55",
-              view === "list" && selected && "bg-primary/10 ring-1 ring-inset ring-primary/25",
-              view === "grid" && "p-1.5 hover:bg-accent/35",
-              view === "grid" && selected && "bg-primary/10 ring-1 ring-inset ring-primary/30",
+                "grid h-12 grid-cols-[34px_minmax(130px,0.5fr)_minmax(0,1fr)_84px] items-center gap-3 px-2 rounded-md hover:bg-accent/40",
+              view === "list" && selected && "bg-primary/[0.08] hover:bg-primary/[0.12]",
+              view === "grid" && "p-1.5 hover:bg-accent/25",
+              view === "grid" && selected && "bg-primary/[0.05]",
             )}
             onClick={(event) => onSelect(asset, event)}
             onContextMenu={() => onContextSelect(asset)}
@@ -177,10 +177,11 @@ function AssetCardComponent({
           >
       <span
         className={cn(
-          "relative block overflow-hidden border bg-muted/20",
+          "relative block overflow-hidden bg-muted/20 transition-all",
           view === "grid" ? "aspect-[4/3] rounded-md" : "size-[34px] rounded-md",
-          selected && view === "grid" && "border-primary/60",
-          !selected && "group-hover:border-foreground/20",
+          selected
+            ? "border-2 border-primary shadow-[0_0_12px_-2px_rgba(201,154,69,0.25)]"
+            : "border border-border/60 group-hover:border-foreground/30",
           usableImageSource && ["image", "texture"].includes(asset.assetType) && "checkerboard",
         )}
       >
@@ -232,20 +233,14 @@ function AssetCardComponent({
         )}
       </span>
 
-      {view === "grid" && selected && (
-        <span className="absolute top-3 right-3 grid size-5 place-items-center rounded-full bg-primary text-primary-foreground shadow-sm">
-          <Check className="size-3" strokeWidth={2.5} />
-        </span>
-      )}
-
       {view === "grid" && asset.duplicateCount > 1 && (
-        <span className={cn("absolute left-3 flex h-5 items-center gap-1 rounded-full border bg-background/90 px-1.5 text-[11px] text-muted-foreground backdrop-blur-sm", asset.assetType === "audio" ? "top-11" : "top-3")} title={`${asset.duplicateCount} identical files`}>
+        <span className={cn("absolute left-3 flex h-5 items-center gap-1 rounded-sm border border-border/80 bg-background/90 px-1.5 text-[11px] text-muted-foreground backdrop-blur-sm", asset.assetType === "audio" ? "top-10" : "top-3")} title={`${asset.duplicateCount} identical files`}>
           <Copy className="size-2.5" /> {asset.duplicateCount}
         </span>
       )}
 
       <span className={cn("min-w-0", view === "grid" && "mt-1.5 block px-0.5")}>
-        <span className="block truncate text-xs font-medium text-foreground/90" title={asset.name}>
+        <span className={cn("block truncate text-xs font-medium transition-colors", selected ? "text-foreground font-semibold" : "text-foreground/90")} title={asset.name}>
           {truncateMiddle(asset.name, view === "grid" ? 28 : 40)}
         </span>
         {view === "grid" && (

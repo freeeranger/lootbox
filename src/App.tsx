@@ -98,6 +98,8 @@ import {
 } from "@/components/ui/select";
 import { cn, collapseHomePath } from "@/lib/utils";
 import { toggleAudioPlayback } from "./audioPlayback";
+
+const EMPTY_PATHS: string[] = [];
 import { godotExportCompletionCopy } from "./godotExportCompletion";
 import { readProjectModelFormats, writeProjectModelFormats } from "./godotExportPreferences";
 import { readSavedViews, resolveSavedSelection, writeSavedViews } from "./savedViews";
@@ -325,19 +327,17 @@ function MultiFilterSelect({
   onValueChange: (value: string) => void;
   className?: string;
 }) {
+  const [filterQuery, setFilterQuery] = useState("");
   const selectedValues = useMemo(
     () => (value ? value.split(",").map((s) => s.trim()).filter(Boolean) : []),
     [value],
   );
 
-  const displayLabel = useMemo(() => {
-    if (selectedValues.length === 0) return placeholder;
-    if (selectedValues.length === 1) {
-      const match = options.find((opt) => opt.value === selectedValues[0]);
-      return match ? match.label : selectedValues[0];
-    }
-    return `${selectedValues.length} selected`;
-  }, [options, placeholder, selectedValues]);
+  const filteredOptions = useMemo(() => {
+    if (!filterQuery.trim()) return options;
+    const q = filterQuery.toLowerCase();
+    return options.filter((opt) => opt.label.toLowerCase().includes(q) || opt.value.toLowerCase().includes(q));
+  }, [options, filterQuery]);
 
   const toggleValue = (val: string) => {
     let next: string[];
@@ -349,50 +349,56 @@ function MultiFilterSelect({
     onValueChange(next.join(","));
   };
 
+  if (options.length === 0) return null;
+
   return (
     <div className={cn("block min-w-0", className)}>
-      <span className="mb-1.5 block text-[11px] font-medium text-muted-foreground">{label}</span>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 w-full justify-between rounded-md px-2.5 text-xs font-normal"
-            >
-              <span className="truncate">{displayLabel}</span>
-              <ChevronsUpDown className="size-3 shrink-0 text-muted-foreground" />
-            </Button>
-          }
-        />
-        <DropdownMenuContent align="start" className="max-h-60 w-52 overflow-y-auto p-1 text-xs">
-          <DropdownMenuItem
-            className="flex items-center justify-between px-2 py-1.5 cursor-pointer text-xs"
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[11px] font-medium text-muted-foreground">{label}</span>
+        {selectedValues.length > 0 && (
+          <button
+            type="button"
             onClick={() => onValueChange("")}
+            className="text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
           >
-            <span>{placeholder}</span>
-            {selectedValues.length === 0 && <Check className="size-3.5 text-primary" />}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          {options.map((option) => {
+            Clear ({selectedValues.length})
+          </button>
+        )}
+      </div>
+      {options.length > 6 && (
+        <input
+          type="text"
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder={`Search ${label.toLowerCase()}...`}
+          className="mb-1 h-5 w-full rounded-xs border border-border/60 bg-background/80 px-1.5 text-[11px] text-foreground placeholder:text-muted-foreground/60 focus:border-primary/60 focus:outline-none"
+        />
+      )}
+      <div className="quiet-scrollbar max-h-24 overflow-y-auto rounded-sm border border-border/60 bg-muted/10 p-0.5 space-y-0.5">
+        {filteredOptions.length === 0 ? (
+          <div className="px-1.5 py-1 text-[11px] text-muted-foreground">No matches</div>
+        ) : (
+          filteredOptions.map((option) => {
             const isChecked = selectedValues.includes(option.value);
             return (
-              <DropdownMenuItem
+              <button
                 key={option.value}
-                className="flex items-center justify-between px-2 py-1.5 cursor-pointer text-xs"
-                onClick={(e) => {
-                  e.preventDefault();
-                  toggleValue(option.value);
-                }}
+                type="button"
+                className={cn(
+                  "flex h-5 w-full items-center justify-between rounded-xs px-1.5 text-[11px] text-left transition-colors cursor-pointer",
+                  isChecked
+                    ? "bg-primary/20 text-foreground font-medium"
+                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                )}
+                onClick={() => toggleValue(option.value)}
               >
                 <span className="truncate">{option.label}</span>
-                {isChecked && <Check className="size-3.5 text-primary" />}
-              </DropdownMenuItem>
+                {isChecked && <Check className="size-3 text-primary shrink-0 ml-1" />}
+              </button>
             );
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
+          })
+        )}
+      </div>
     </div>
   );
 }
@@ -847,8 +853,13 @@ function App() {
 
     const move = (nextEvent: PointerEvent) => {
       const width = side === "left" ? nextEvent.clientX : window.innerWidth - nextEvent.clientX;
-      if (side === "left") setLeftPanelWidth(clampPanelWidth(side, width));
-      else setRightPanelWidth(clampPanelWidth(side, width));
+      if (side === "left") {
+        setLeftPanelCollapsed(false);
+        setLeftPanelWidth(clampPanelWidth(side, width));
+      } else {
+        setRightPanelCollapsed(false);
+        setRightPanelWidth(clampPanelWidth(side, width));
+      }
     };
     const stop = () => {
       window.removeEventListener("pointermove", move);
@@ -867,6 +878,8 @@ function App() {
     const maximum = side === "left" ? 320 : 480;
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
+    if (side === "left" && leftPanelCollapsed) setLeftPanelCollapsed(false);
+    if (side === "right" && rightPanelCollapsed) setRightPanelCollapsed(false);
     if (event.key === "Home" || event.key === "End") {
       const width = event.key === "Home" ? minimum : clampPanelWidth(side, maximum);
       if (side === "left") setLeftPanelWidth(width);
@@ -1876,70 +1889,70 @@ function App() {
     : null;
 
   return (
-    <div
-      className="dark grid h-full bg-background text-foreground"
-      style={{
-        gridTemplateColumns: `${layoutLeftPanelWidth}px 4px minmax(0, 1fr) 4px ${layoutRightPanelWidth}px`,
-      }}
-    >
+    <div className="dark flex h-full w-full overflow-hidden bg-background text-foreground">
       {!leftPanelCollapsed && (
-        <Sidebar
-          snapshot={snapshot}
-          selection={selection}
-          creatingCollection={creatingCollection}
-          activeProjectId={activeProjectId}
-          activeProjectAttention={activeProjectAttention}
-          savedViews={savedViews}
-          activeSavedViewId={activeSavedViewId}
-          onSelect={(next) => {
-            setSelection(next);
-            setActiveSavedViewId(null);
-            clearAssetSelection();
-          }}
-          onActivateProject={activateProject}
-          onRelocateProject={(project) => void relocateGodotProject(project)}
-          onOpenSavedView={openSavedView}
-          onDeleteSavedView={(view) => {
-            setSavedViews((current) => current.filter((candidate) => candidate.id !== view.id));
-            if (activeSavedViewId === view.id) setActiveSavedViewId(null);
-            setMetadataUndo({
-              label: `Undo deleting “${view.name}”`,
-              run: async () => setSavedViews((current) => current.some((candidate) => candidate.id === view.id) ? current : [...current, view]),
-            });
-            setNotice(`${view.name} deleted`);
-          }}
-          onImport={() => void importPack()}
-          onStartCollection={() => {
-            setAddSelectionToNewCollection(false);
-            setCreatingCollection(true);
-          }}
-          onRenamePack={startRenamePack}
-          onRescanPack={(pack) => void rescanPack(pack)}
-          onOpenPack={(pack) =>
-            void api.openAsset(pack.rootPath).catch((caught) => reportError(caught, "open-pack"))
-          }
-          onRelocatePack={(pack) => void relocatePack(pack)}
-          onForgetPack={requestForgetPack}
-          onViewRemoved={(pack) => {
-            setSelection({ kind: "removed", packId: pack.id });
-            clearAssetSelection();
-          }}
-          onViewMissing={(pack) => {
-            setSelection({ kind: "missing", packId: pack.id });
-            clearAssetSelection();
-          }}
-          onPurgeMissing={setConfirmPurge}
-          onAddProject={() => void addGodotProject()}
-          onOpenProject={(project) =>
-            void api.openAsset(project.rootPath).catch((caught) => reportError(caught, "open-project"))
-          }
-          onForgetProject={setConfirmProjectRemoval}
-          onSettings={() => {
-            setSettingsMessage("");
-            setSettingsOpen(true);
-          }}
-          onShortcuts={() => setShortcutsOpen(true)}
-        />
+        <div
+          className="h-full shrink-0 overflow-hidden"
+          style={{ width: `${layoutLeftPanelWidth}px` }}
+        >
+          <Sidebar
+            snapshot={snapshot}
+            selection={selection}
+            creatingCollection={creatingCollection}
+            activeProjectId={activeProjectId}
+            activeProjectAttention={activeProjectAttention}
+            savedViews={savedViews}
+            activeSavedViewId={activeSavedViewId}
+            onSelect={(next) => {
+              setSelection(next);
+              setActiveSavedViewId(null);
+              clearAssetSelection();
+            }}
+            onActivateProject={activateProject}
+            onRelocateProject={(project) => void relocateGodotProject(project)}
+            onOpenSavedView={openSavedView}
+            onDeleteSavedView={(view) => {
+              setSavedViews((current) => current.filter((candidate) => candidate.id !== view.id));
+              if (activeSavedViewId === view.id) setActiveSavedViewId(null);
+              setMetadataUndo({
+                label: `Undo deleting “${view.name}”`,
+                run: async () => setSavedViews((current) => current.some((candidate) => candidate.id === view.id) ? current : [...current, view]),
+              });
+              setNotice(`${view.name} deleted`);
+            }}
+            onImport={() => void importPack()}
+            onStartCollection={() => {
+              setAddSelectionToNewCollection(false);
+              setCreatingCollection(true);
+            }}
+            onRenamePack={startRenamePack}
+            onRescanPack={(pack) => void rescanPack(pack)}
+            onOpenPack={(pack) =>
+              void api.openAsset(pack.rootPath).catch((caught) => reportError(caught, "open-pack"))
+            }
+            onRelocatePack={(pack) => void relocatePack(pack)}
+            onForgetPack={requestForgetPack}
+            onViewRemoved={(pack) => {
+              setSelection({ kind: "removed", packId: pack.id });
+              clearAssetSelection();
+            }}
+            onViewMissing={(pack) => {
+              setSelection({ kind: "missing", packId: pack.id });
+              clearAssetSelection();
+            }}
+            onPurgeMissing={setConfirmPurge}
+            onAddProject={() => void addGodotProject()}
+            onOpenProject={(project) =>
+              void api.openAsset(project.rootPath).catch((caught) => reportError(caught, "open-project"))
+            }
+            onForgetProject={setConfirmProjectRemoval}
+            onSettings={() => {
+              setSettingsMessage("");
+              setSettingsOpen(true);
+            }}
+            onShortcuts={() => setShortcutsOpen(true)}
+          />
+        </div>
       )}
 
       <div
@@ -1948,8 +1961,8 @@ function App() {
         aria-orientation="vertical"
         aria-valuemin={168}
         aria-valuemax={320}
-        aria-valuenow={Math.round(layoutLeftPanelWidth)}
-        aria-valuetext={`${Math.round(layoutLeftPanelWidth)} pixels`}
+        aria-valuenow={Math.round(layoutLeftPanelWidth || leftPanelWidth)}
+        aria-valuetext={`${Math.round(layoutLeftPanelWidth || leftPanelWidth)} pixels`}
         tabIndex={0}
         className="group relative z-20 flex w-1.5 shrink-0 cursor-col-resize items-center justify-center outline-none bg-border/40 hover:bg-primary/50 transition-colors select-none"
         onPointerDown={(event) => startPanelResize("left", event)}
@@ -1969,7 +1982,7 @@ function App() {
         </button>
       </div>
 
-      <main className="flex min-w-0 flex-col overflow-hidden">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-4">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {leftPanelCollapsed && (
@@ -2058,7 +2071,7 @@ function App() {
                   </Button>
                 }
               />
-              <PopoverContent align="end" side="bottom" sideOffset={8} className="w-80 gap-3 p-3 text-xs">
+              <PopoverContent align="end" side="bottom" sideOffset={8} className="w-96 gap-3 p-3 text-xs">
                 <div className="flex items-center justify-between border-b pb-2">
                   <PopoverHeading className="text-xs font-semibold text-foreground">Filter assets</PopoverHeading>
                   {(activeFilters.length > 0 || Boolean(filters.type)) && (
@@ -2075,25 +2088,11 @@ function App() {
                   )}
                 </div>
                 <div className="grid grid-cols-2 gap-2.5 pt-1">
-                  <FilterSelect
-                    className="col-span-2"
-                    label="Asset type"
-                    value={filters.type ?? ""}
-                    placeholder="All types"
-                    options={snapshot.typeCounts.map(({ assetType }) => ({
-                      value: assetType,
-                      label: typeLabels[assetType] ?? assetType,
-                    }))}
-                    onValueChange={(value) => {
-                      setFilters((current) => ({ ...current, type: value }));
-                      setActiveSavedViewId(null);
-                    }}
-                  />
                   <MultiFilterSelect label="Format" value={filters.extension} placeholder="All formats" options={filterOptions.extensions.map((value) => ({ value, label: `.${value}` }))} onValueChange={(value) => { setFilters((current) => ({ ...current, extension: value })); setActiveSavedViewId(null); }} />
                   <MultiFilterSelect label="Map role" value={filters.mapRole} placeholder="All map roles" options={filterOptions.mapRoles.map((value) => ({ value, label: value.replaceAll("_", " ") }))} onValueChange={(value) => { setFilters((current) => ({ ...current, mapRole: value })); setActiveSavedViewId(null); }} />
-                  <MultiFilterSelect label="Tag" value={filters.tag} placeholder="All tags" options={filterOptions.tags.map((value) => ({ value, label: value }))} onValueChange={(value) => { setFilters((current) => ({ ...current, tag: value })); setActiveSavedViewId(null); }} />
+                  <MultiFilterSelect className="col-span-2" label="Tag" value={filters.tag} placeholder="All tags" options={filterOptions.tags.map((value) => ({ value, label: value }))} onValueChange={(value) => { setFilters((current) => ({ ...current, tag: value })); setActiveSavedViewId(null); }} />
                   <FilterSelect label="Minimum resolution" value={filters.minWidth} placeholder="Any resolution" options={[256, 512, 1024, 2048, 4096, 8192].map((value) => ({ value: String(value), label: `${value} × ${value}+` }))} onValueChange={(value) => { setFilters((current) => ({ ...current, minWidth: value })); setActiveSavedViewId(null); }} />
-                  <FilterSelect className="col-span-2" label="Classification confidence" value={filters.minConfidence} placeholder="Any confidence" options={[{ value: "80", label: "Needs review · 80% or lower" }, { value: "60", label: "Uncertain · 60% or lower" }]} onValueChange={(value) => { setFilters((current) => ({ ...current, minConfidence: value })); setActiveSavedViewId(null); }} />
+                  <FilterSelect label="Classification confidence" value={filters.minConfidence} placeholder="Any confidence" options={[{ value: "80", label: "Needs review · ≤80%" }, { value: "60", label: "Uncertain · ≤60%" }]} onValueChange={(value) => { setFilters((current) => ({ ...current, minConfidence: value })); setActiveSavedViewId(null); }} />
                   <FilterSelect className="col-span-2" label="File status" value={filters.status} placeholder="Available files" options={[{ value: "missing", label: "Missing files" }]} onValueChange={(value) => { setFilters((current) => ({ ...current, status: value })); setActiveSavedViewId(null); }} />
                   <FilterSelect
                     className="col-span-2"
@@ -2231,7 +2230,7 @@ function App() {
                 setActiveSavedViewId(null);
               }}
               className={cn(
-                "flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium transition-colors cursor-pointer",
+                "flex h-6 shrink-0 items-center gap-1.5 rounded-sm px-2 text-[11px] font-medium transition-colors cursor-pointer",
                 !filters.type
                   ? "bg-primary text-primary-foreground shadow-xs font-semibold"
                   : "bg-background/80 text-muted-foreground border border-border/60 hover:bg-accent hover:text-foreground",
@@ -2258,7 +2257,7 @@ function App() {
                     setActiveSavedViewId(null);
                   }}
                   className={cn(
-                    "flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium transition-colors cursor-pointer",
+                    "flex h-6 shrink-0 items-center gap-1.5 rounded-sm px-2 text-[11px] font-medium transition-colors cursor-pointer",
                     isActive
                       ? "bg-primary text-primary-foreground shadow-xs font-semibold"
                       : "bg-background/80 text-muted-foreground border border-border/60 hover:bg-accent hover:text-foreground",
@@ -2282,7 +2281,7 @@ function App() {
                     type="button"
                     variant="secondary"
                     size="xs"
-                    className="h-6 shrink-0 rounded-full px-2 text-[11px] gap-1"
+                    className="h-6 shrink-0 rounded-sm px-2 text-[11px] gap-1"
                     onClick={() => {
                       setFilters((current) => ({ ...current, [filter.key]: "" }));
                       setActiveSavedViewId(null);
@@ -2339,11 +2338,19 @@ function App() {
           />
         ) : (
         <>
-        <div className={cn("flex h-12 shrink-0 items-center justify-between border-b px-4", selectedIds.size > 0 && "bg-primary/[0.035]")}>
+        <div className={cn("flex h-12 shrink-0 items-center justify-between border-b px-4 transition-colors", selectedIds.size > 0 && "bg-primary/[0.04] border-b-primary/25")}>
           {selectedIds.size > 0 ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-xs font-medium">{selectionSummary}</span>
-              <Button type="button" variant="ghost" size="xs" className="shrink-0 text-[11px] text-muted-foreground" onClick={() => setReviewSelectionOpen(true)}>Review selection</Button>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="inline-flex items-center gap-1.5 rounded-sm border border-primary/40 bg-primary/15 px-2 py-0.5 font-mono text-[11px] font-semibold text-primary">
+                <span>{selectedIds.size.toLocaleString()}</span>
+                <span>selected</span>
+              </span>
+              <span className="truncate text-xs text-muted-foreground hidden sm:inline">
+                {selectionSummary.includes("·") ? selectionSummary.slice(selectionSummary.indexOf("·") + 1).trim() : selectionSummary}
+              </span>
+              <Button type="button" variant="secondary" size="xs" className="h-6 shrink-0 rounded-sm px-2 text-[11px] font-medium" onClick={() => setReviewSelectionOpen(true)}>
+                Review selection
+              </Button>
             </div>
           ) : (
             <div className="flex min-w-0 items-baseline gap-2">
@@ -2367,13 +2374,20 @@ function App() {
           {selectedIds.size > 0 && selectedAsset ? (
             <div className="flex items-center gap-1.5">
               {selectedIds.size === 1 && (
-                <Button type="button" variant="outline" size="sm" className="rounded-md" onClick={() => openAsset(selectedAsset)} aria-label="Open asset" title="Open asset">
-                  <ExternalLink /> <span className="max-[1150px]:hidden">Open</span>
+                <Button type="button" variant="outline" size="sm" className="h-7 rounded-sm px-2.5 text-xs font-normal" onClick={() => openAsset(selectedAsset)} aria-label="Open asset" title="Open asset">
+                  <ExternalLink className="size-3.5" /> <span className="max-[1150px]:hidden">Open</span>
                 </Button>
               )}
               {selection.kind !== "removed" && activeProject?.available && (
-                <Button type="button" variant="outline" size="sm" className="rounded-md" aria-label={`Review export to ${activeProject.name}`} title={`Export to ${activeProject.name}`} onClick={() => void addSelectionToGodot(activeProject.id)}>
-                  <Gamepad2 /> <span className="max-[1150px]:hidden">Export</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 gap-1.5 rounded-sm bg-primary px-2.5 text-xs font-medium text-primary-foreground shadow-xs hover:bg-primary/90"
+                  aria-label={`Review export to ${activeProject.name}`}
+                  title={`Export to ${activeProject.name}`}
+                  onClick={() => void addSelectionToGodot(activeProject.id)}
+                >
+                  <Gamepad2 className="size-3.5" /> <span>Export to {activeProject.name}</span>
                 </Button>
               )}
               {(selection.kind === "removed" || selection.kind === "project" || activeProjectId === null) && (
@@ -2381,20 +2395,29 @@ function App() {
                   type="button"
                   variant={selection.kind === "removed" ? "outline" : "ghost"}
                   size="sm"
-                  className={cn("rounded-md", selection.kind !== "removed" && "text-destructive hover:text-destructive")}
+                  className={cn("h-7 rounded-sm px-2 text-xs", selection.kind !== "removed" && "text-destructive hover:bg-destructive/10 hover:text-destructive")}
                   aria-label={selection.kind === "removed" ? "Restore assets" : selection.kind === "project" ? "Remove assets from project" : "Remove assets from Lootbox"}
                   title={selection.kind === "removed" ? "Restore" : selection.kind === "project" ? "Remove from project" : "Remove from Lootbox"}
                   onClick={() => selection.kind === "removed" ? restoreAsset(selectedAsset) : requestDisplayedAssetRemoval(selectedAsset)}
                 >
                   {selection.kind === "removed"
-                    ? <><ArchiveRestore /> <span className="max-[1150px]:hidden">Restore</span></>
+                    ? <><ArchiveRestore className="size-3.5" /> <span className="max-[1150px]:hidden">Restore</span></>
                     : selection.kind === "project"
-                      ? <><FolderMinus /> <span className="max-[1150px]:hidden">Remove</span></>
-                      : <><Trash2 /> <span className="max-[1150px]:hidden">Remove</span></>}
+                      ? <><FolderMinus className="size-3.5" /> <span className="max-[1150px]:hidden">Remove</span></>
+                      : <><Trash2 className="size-3.5" /> <span className="max-[1150px]:hidden">Remove</span></>}
                 </Button>
               )}
-              <Button type="button" variant="ghost" size="icon-sm" className="rounded-md text-muted-foreground" onClick={clearAssetSelection} aria-label="Clear selection" title="Clear selection">
-                <X />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 rounded-sm px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={clearAssetSelection}
+                aria-label="Clear selection"
+                title="Clear selection (Esc)"
+              >
+                <X className="size-3.5" />
+                <span className="max-[1150px]:hidden">Deselect</span>
               </Button>
             </div>
           ) : (selection.kind === "pack" || selection.kind === "removed" || selection.kind === "missing" || selection.kind === "collection" || selection.kind === "project") && (
@@ -2584,7 +2607,7 @@ function App() {
                         projectAsset={selection.kind === "project"}
                         allowRemove={selection.kind === "removed" || selection.kind === "project" || activeProjectId === null}
                         selectionCount={selectedIds.has(asset.id) ? selectedIds.size : 1}
-                        dragPaths={selectedIds.has(asset.id) ? selectedDragPaths : [asset.absolutePath]}
+                        dragPaths={selectedIds.has(asset.id) ? selectedDragPaths : EMPTY_PATHS}
                         onCopyPath={copyAssetPath}
                         onError={reportCardError}
                         onPreviewError={reportCardPreviewError}
@@ -2628,8 +2651,8 @@ function App() {
         aria-orientation="vertical"
         aria-valuemin={260}
         aria-valuemax={480}
-        aria-valuenow={Math.round(layoutRightPanelWidth)}
-        aria-valuetext={`${Math.round(layoutRightPanelWidth)} pixels`}
+        aria-valuenow={Math.round(layoutRightPanelWidth || rightPanelWidth)}
+        aria-valuetext={`${Math.round(layoutRightPanelWidth || rightPanelWidth)} pixels`}
         tabIndex={0}
         className="group relative z-20 flex w-1.5 shrink-0 cursor-col-resize items-center justify-center outline-none bg-border/40 hover:bg-primary/50 transition-colors select-none"
         onPointerDown={(event) => startPanelResize("right", event)}
@@ -2650,108 +2673,113 @@ function App() {
       </div>
 
       {!rightPanelCollapsed && (
-        selectedAsset ? (
-          <DetailPanel
-            asset={selectedAsset}
-            selectedCount={Math.max(selectedIds.size, 1)}
-            selectedAssets={selectedAssets}
-            tagInputRef={tagInputRef}
-            busy={editingSelection}
-            collections={snapshot.collections}
-            onAddTag={async (name) => {
-              let changed: number[] = [];
-              if (await mutateSelected(async () => { changed = await api.addTags([...selectedIds], name); }) && changed.length > 0) {
-                setMetadataUndo({ label: `Undo adding “${name}”`, run: async () => { await api.removeTags(changed, name); await refresh(); } });
-                setNotice(`Added “${name}” to ${changed.length.toLocaleString()} assets`);
-              }
-            }}
-            onRemoveTag={async (name) => {
-              let changed: number[] = [];
-              if (await mutateSelected(async () => { changed = await api.removeTags([...selectedIds], name); }) && changed.length > 0) {
-                setMetadataUndo({ label: `Undo removing “${name}”`, run: async () => { await api.addTags(changed, name); await refresh(); } });
-                setNotice(`Removed “${name}” from ${changed.length.toLocaleString()} assets`);
-              }
-            }}
-            onMembership={async (collectionId, included) => {
-              const collection = snapshot.collections.find((item) => item.id === collectionId);
-              let changed: number[] = [];
-              if (await mutateSelected(async () => { changed = await api.setCollectionMemberships([...selectedIds], collectionId, included); }) && changed.length > 0) {
-                setMetadataUndo({ label: `Undo collection change`, run: async () => { await api.setCollectionMemberships(changed, collectionId, !included); await refresh(); } });
-                setNotice(`${included ? "Added to" : "Removed from"} ${collection?.name ?? "collection"} · ${changed.length.toLocaleString()} assets`);
-              }
-            }}
-            onClassification={(assetType, mapRole) => {
-              return guardedBulkMutation(
-                `Change classification for ${selectedIds.size.toLocaleString()} assets?`,
-                `This applies the new classification to every selected asset. Source files stay untouched.`,
+        <div
+          className="h-full shrink-0 overflow-hidden"
+          style={{ width: `${layoutRightPanelWidth}px` }}
+        >
+          {selectedAsset ? (
+            <DetailPanel
+              asset={selectedAsset}
+              selectedCount={Math.max(selectedIds.size, 1)}
+              selectedAssets={selectedAssets}
+              tagInputRef={tagInputRef}
+              busy={editingSelection}
+              collections={snapshot.collections}
+              onAddTag={async (name) => {
+                let changed: number[] = [];
+                if (await mutateSelected(async () => { changed = await api.addTags([...selectedIds], name); }) && changed.length > 0) {
+                  setMetadataUndo({ label: `Undo adding “${name}”`, run: async () => { await api.removeTags(changed, name); await refresh(); } });
+                  setNotice(`Added “${name}” to ${changed.length.toLocaleString()} assets`);
+                }
+              }}
+              onRemoveTag={async (name) => {
+                let changed: number[] = [];
+                if (await mutateSelected(async () => { changed = await api.removeTags([...selectedIds], name); }) && changed.length > 0) {
+                  setMetadataUndo({ label: `Undo removing “${name}”`, run: async () => { await api.addTags(changed, name); await refresh(); } });
+                  setNotice(`Removed “${name}” from ${changed.length.toLocaleString()} assets`);
+                }
+              }}
+              onMembership={async (collectionId, included) => {
+                const collection = snapshot.collections.find((item) => item.id === collectionId);
+                let changed: number[] = [];
+                if (await mutateSelected(async () => { changed = await api.setCollectionMemberships([...selectedIds], collectionId, included); }) && changed.length > 0) {
+                  setMetadataUndo({ label: `Undo collection change`, run: async () => { await api.setCollectionMemberships(changed, collectionId, !included); await refresh(); } });
+                  setNotice(`${included ? "Added to" : "Removed from"} ${collection?.name ?? "collection"} · ${changed.length.toLocaleString()} assets`);
+                }
+              }}
+              onClassification={(assetType, mapRole) => {
+                return guardedBulkMutation(
+                  `Change classification for ${selectedIds.size.toLocaleString()} assets?`,
+                  `This applies the new classification to every selected asset. Source files stay untouched.`,
+                  async () => {
+                    const snapshots = await api.setClassificationOverride([...selectedIds], assetType, mapRole);
+                    if (snapshots.length > 0) {
+                      setMetadataUndo({ label: "Undo classification change", run: async () => {
+                        await api.restoreClassificationOverrides(snapshots);
+                        await refresh();
+                      } });
+                      setNotice(`Classification updated · ${snapshots.length.toLocaleString()} assets`);
+                    }
+                  },
+                );
+              }}
+              onGroup={(action) => guardedBulkMutation(
+                `${action === "merge" ? "Group" : "Separate"} ${selectedIds.size.toLocaleString()} assets?`,
+                `${action === "merge" ? "Grouping" : "Separating"} changes how all selected files are presented and exported. Source files stay untouched.`,
                 async () => {
-                  const snapshots = await api.setClassificationOverride([...selectedIds], assetType, mapRole);
+                  const snapshots = await api.setClassificationOverride([...selectedIds], undefined, undefined, action);
                   if (snapshots.length > 0) {
-                    setMetadataUndo({ label: "Undo classification change", run: async () => {
+                    setMetadataUndo({ label: `Undo ${action === "merge" ? "grouping" : "separation"}`, run: async () => {
                       await api.restoreClassificationOverrides(snapshots);
                       await refresh();
                     } });
-                    setNotice(`Classification updated · ${snapshots.length.toLocaleString()} assets`);
+                    setNotice(`${action === "merge" ? "Grouped" : "Separated"} ${snapshots.length.toLocaleString()} assets`);
                   }
                 },
-              );
-            }}
-            onGroup={(action) => guardedBulkMutation(
-              `${action === "merge" ? "Group" : "Separate"} ${selectedIds.size.toLocaleString()} assets?`,
-              `${action === "merge" ? "Grouping" : "Separating"} changes how all selected files are presented and exported. Source files stay untouched.`,
-              async () => {
-                const snapshots = await api.setClassificationOverride([...selectedIds], undefined, undefined, action);
-                if (snapshots.length > 0) {
-                  setMetadataUndo({ label: `Undo ${action === "merge" ? "grouping" : "separation"}`, run: async () => {
+              )}
+              onResetClassification={() => mutateSelected(async () => {
+                const snapshots = await api.resetClassificationOverride([...selectedIds]);
+                if (snapshots.some((snapshot) => snapshot.existed)) {
+                  setMetadataUndo({ label: "Undo automatic classification", run: async () => {
                     await api.restoreClassificationOverrides(snapshots);
                     await refresh();
                   } });
-                  setNotice(`${action === "merge" ? "Grouped" : "Separated"} ${snapshots.length.toLocaleString()} assets`);
+                  setNotice(`Automatic classification restored · ${snapshots.length.toLocaleString()} assets`);
                 }
-              },
-            )}
-            onResetClassification={() => mutateSelected(async () => {
-              const snapshots = await api.resetClassificationOverride([...selectedIds]);
-              if (snapshots.some((snapshot) => snapshot.existed)) {
-                setMetadataUndo({ label: "Undo automatic classification", run: async () => {
-                  await api.restoreClassificationOverrides(snapshots);
-                  await refresh();
-                } });
-                setNotice(`Automatic classification restored · ${snapshots.length.toLocaleString()} assets`);
+              }).then(() => undefined)}
+              onAddCollection={() => {
+                setAddSelectionToNewCollection(true);
+                setCreatingCollection(true);
+              }}
+              onCopyPath={copyAssetPath}
+              onOpen={() =>
+                void api
+                  .openAsset(selectedAsset.absolutePath)
+                  .catch((caught) => reportError(caught, "open-asset"))
               }
-            }).then(() => undefined)}
-            onAddCollection={() => {
-              setAddSelectionToNewCollection(true);
-              setCreatingCollection(true);
-            }}
-            onCopyPath={copyAssetPath}
-            onOpen={() =>
-              void api
-                .openAsset(selectedAsset.absolutePath)
-                .catch((caught) => reportError(caught, "open-asset"))
-            }
-            onOpenVariant={(path) =>
-              void api.openAsset(path).catch((caught) => reportError(caught, "open-asset"))
-            }
-            onRevealPath={(path) =>
-              void api
-                .revealAsset(path)
-                .catch((caught) => reportError(caught, "reveal-asset"))
-            }
-          />
-        ) : (
-          <aside className="min-w-0 border-l bg-background">
-            <header className="flex h-[58px] items-center border-b px-4">
-              <h2 className="text-xs font-semibold">Details</h2>
-            </header>
-            <div className="flex h-[calc(100%-58px)] items-center justify-center px-6 text-center">
-              <div>
-                <p className="text-xs font-medium">No asset selected</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">Select an asset, or use the arrow keys to browse.</p>
+              onOpenVariant={(path) =>
+                void api.openAsset(path).catch((caught) => reportError(caught, "open-asset"))
+              }
+              onRevealPath={(path) =>
+                void api
+                  .revealAsset(path)
+                  .catch((caught) => reportError(caught, "reveal-asset"))
+              }
+            />
+          ) : (
+            <aside className="h-full min-w-0 border-l bg-background">
+              <header className="flex h-[58px] items-center border-b px-4">
+                <h2 className="text-xs font-semibold">Details</h2>
+              </header>
+              <div className="flex h-[calc(100%-58px)] items-center justify-center px-6 text-center">
+                <div>
+                  <p className="text-xs font-medium">No asset selected</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">Select an asset, or use the arrow keys to browse.</p>
+                </div>
               </div>
-            </div>
-          </aside>
-        )
+            </aside>
+          )}
+        </div>
       )}
 
       {(error || notice || godotExportNotice) && (

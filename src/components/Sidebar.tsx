@@ -148,7 +148,7 @@ function NavItem({ active, icon: Icon, label, description, count, title, onClick
       className={cn(
         "relative w-full justify-start rounded-md px-2.5 text-xs font-normal text-muted-foreground transition-colors",
         description ? "h-auto min-h-10 py-1.5" : "h-8",
-        active && "bg-sidebar-accent text-sidebar-accent-foreground font-medium",
+        active && "bg-sidebar-accent text-sidebar-accent-foreground font-medium before:absolute before:left-0 before:top-2 before:bottom-2 before:w-0.5 before:rounded-full before:bg-primary",
       )}
       onClick={onClick}
       title={title}
@@ -284,7 +284,7 @@ export function Sidebar({
   const showSidebarSearch = snapshot.packs.length + snapshot.collections.length + savedViews.length > 10;
 
   return (
-    <aside className="flex min-w-0 flex-col overflow-hidden border-r bg-sidebar text-sidebar-foreground">
+    <aside className="flex h-full min-w-0 flex-col overflow-hidden border-r bg-sidebar text-sidebar-foreground">
       {/* Brand & Workspace Switcher */}
       <div className="shrink-0 space-y-2.5 px-3 pt-3 pb-2">
         <div className="flex h-7 items-center gap-2 px-1">

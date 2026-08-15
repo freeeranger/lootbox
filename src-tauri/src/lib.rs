@@ -1,4 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use rayon::prelude::*;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -7,7 +8,7 @@ use std::{
     cmp::Ordering as CmpOrdering,
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -505,7 +506,7 @@ struct ClassificationOverrideSnapshot {
 
 const SCHEMA_VERSION: i64 = 6;
 const IMAGE_THUMBNAIL_VERSION: i64 = 2;
-const MODEL_THUMBNAIL_VERSION: i64 = 3;
+const MODEL_THUMBNAIL_VERSION: i64 = 4;
 const DEFAULT_CACHE_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
 
 fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -1610,16 +1611,19 @@ fn image_dimensions(path: &Path, asset_type: &str) -> (Option<i64>, Option<i64>)
 }
 
 fn generate_thumbnail(source: &Path, destination: &Path) -> Option<()> {
-    let image = image::ImageReader::open(source)
-        .ok()?
+    let file = File::open(source).ok()?;
+    let reader = BufReader::new(file);
+    let image = image::ImageReader::new(reader)
         .with_guessed_format()
         .ok()?
         .decode()
         .ok()?;
     fs::create_dir_all(destination.parent()?).ok()?;
+    let out_file = File::create(destination).ok()?;
+    let mut writer = BufWriter::new(out_file);
     image
-        .thumbnail(480, 360)
-        .save_with_format(destination, image::ImageFormat::Png)
+        .thumbnail(384, 288)
+        .write_to(&mut writer, image::ImageFormat::Png)
         .ok()?;
     Some(())
 }
@@ -1759,7 +1763,13 @@ fn clean_thumbnail_cache_from_connection(
         } else {
             IMAGE_THUMBNAIL_VERSION
         };
-        if version != current_version || !Path::new(&path).is_file() {
+        let file_path = Path::new(&path);
+        let is_corrupted = match fs::metadata(file_path) {
+            Ok(meta) => meta.len() < 1000,
+            Err(_) => true,
+        };
+        if version != current_version || is_corrupted {
+            let _ = fs::remove_file(file_path);
             connection.execute(
                 "UPDATE assets SET thumbnail_path = NULL, thumbnail_version = 0 WHERE id = ?1",
                 params![asset_id],
@@ -1847,7 +1857,7 @@ async fn regenerate_image_thumbnails(state: State<'_, AppState>) -> Result<Cache
             .write_queue
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let connection = state.connect()?;
+        let mut connection = state.connect()?;
         let jobs = {
             let mut statement = connection.prepare(
                 "SELECT id, absolute_path FROM assets WHERE missing = 0 AND file_type = 'image' AND thumbnail_path IS NULL",
@@ -1857,14 +1867,28 @@ async fn regenerate_image_thumbnails(state: State<'_, AppState>) -> Result<Cache
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             rows
         };
-        for (asset_id, source) in jobs {
-            let destination = state.thumbnail_directory.join(format!("{asset_id}.png"));
-            if generate_thumbnail(Path::new(&source), &destination).is_some() {
-                connection.execute(
+        let results: Vec<(i64, PathBuf)> = jobs
+            .into_par_iter()
+            .filter_map(|(asset_id, source)| {
+                let destination = state.thumbnail_directory.join(format!("{asset_id}.png"));
+                if generate_thumbnail(Path::new(&source), &destination).is_some() {
+                    Some((asset_id, destination))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !results.is_empty() {
+            let tx = connection.transaction()?;
+            {
+                let mut stmt = tx.prepare(
                     "UPDATE assets SET thumbnail_path = ?1, thumbnail_version = ?2 WHERE id = ?3",
-                    params![path_string(&destination), IMAGE_THUMBNAIL_VERSION, asset_id],
                 )?;
+                for (asset_id, destination) in results {
+                    stmt.execute(params![path_string(&destination), IMAGE_THUMBNAIL_VERSION, asset_id])?;
+                }
             }
+            tx.commit()?;
         }
         cache_status_from_connection(&state, &connection)
     })
@@ -1974,7 +1998,7 @@ fn save_model_thumbnail_from_state(
     let png_data = BASE64
         .decode(png_data)
         .map_err(|_| LootboxError::InvalidThumbnail)?;
-    if png_data.len() > 2 * 1024 * 1024 || !png_data.starts_with(PNG_SIGNATURE) {
+    if png_data.len() < 1000 || png_data.len() > 2 * 1024 * 1024 || !png_data.starts_with(PNG_SIGNATURE) {
         return Err(LootboxError::InvalidThumbnail);
     }
 
@@ -2381,19 +2405,37 @@ fn import_pack_from_path(
     recompute_asset_dependencies(&transaction, Some(pack_id))?;
     transaction.commit()?;
     // Image decoding and resizing deliberately runs after the indexing
-    // transaction, keeping the SQLite write lock short.
+    // transaction, parallelized with Rayon across all CPU cores.
     let mut cancelled_after_commit = false;
-    for (asset_id, source, destination) in thumbnail_jobs {
-        if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-            cancelled_after_commit = true;
-            break;
-        }
-        if generate_thumbnail(&source, &destination).is_some() {
-            connection.execute(
+    let results: Vec<(i64, PathBuf)> = thumbnail_jobs
+        .into_par_iter()
+        .filter_map(|(asset_id, source, destination)| {
+            if cancelled.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                return None;
+            }
+            if generate_thumbnail(&source, &destination).is_some() {
+                Some((asset_id, destination))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if cancelled.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        cancelled_after_commit = true;
+    }
+
+    if !results.is_empty() {
+        let tx = connection.transaction()?;
+        {
+            let mut stmt = tx.prepare(
                 "UPDATE assets SET thumbnail_path = ?1, thumbnail_version = ?2 WHERE id = ?3",
-                params![path_string(&destination), IMAGE_THUMBNAIL_VERSION, asset_id],
             )?;
+            for (asset_id, destination) in results {
+                stmt.execute(params![path_string(&destination), IMAGE_THUMBNAIL_VERSION, asset_id])?;
+            }
         }
+        tx.commit()?;
     }
     rebuild_search_index(connection)?;
     let pack = get_pack(connection, pack_id)?;

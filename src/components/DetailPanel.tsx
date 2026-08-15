@@ -295,18 +295,31 @@ export function DetailPanel({
   }
 
   return (
-    <aside className="quiet-scrollbar min-w-0 overflow-y-auto border-l bg-background">
+    <aside className="quiet-scrollbar h-full min-w-0 overflow-y-auto border-l bg-background">
       <header className="sticky top-0 z-20 flex h-[58px] items-center gap-2 border-b bg-background/95 px-3 backdrop-blur-sm">
         <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <h2 className="truncate text-xs font-semibold">{asset.name}</h2>
-            {selectedCount > 1 && <span className="shrink-0 text-[11px] text-muted-foreground"><span>{selectedCount.toLocaleString()} selected</span><span> · editing all</span></span>}
-          </div>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-            {previewAsset.absolutePath === asset.absolutePath
-              ? `${asset.packName} · ${assetTypeNames[asset.assetType]}${asset.resolution ? ` · ${asset.resolution}` : ""}`
-              : `Previewing ${previewAsset.name} · .${previewAsset.extension}`}
-          </p>
+          {selectedCount > 1 ? (
+            <div>
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="inline-flex items-center gap-1 rounded-xs border border-primary/40 bg-primary/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-primary">
+                  {selectedCount.toLocaleString()} selected
+                </span>
+                <h2 className="truncate text-xs font-semibold text-foreground">Batch inspection</h2>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                Editing tags, collections & categories across selection
+              </p>
+            </div>
+          ) : (
+            <div>
+              <h2 className="truncate text-xs font-semibold">{asset.name}</h2>
+              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                {previewAsset.absolutePath === asset.absolutePath
+                  ? `${asset.packName} · ${assetTypeNames[asset.assetType]}${asset.resolution ? ` · ${asset.resolution}` : ""}`
+                  : `Previewing ${previewAsset.name} · .${previewAsset.extension}`}
+              </p>
+            </div>
+          )}
         </div>
         {selectedCount === 1 && <div className="flex items-center">
           <IconAction label="Open previewed file" onClick={() => previewAsset.absolutePath === asset.absolutePath ? onOpen() : onOpenVariant(previewAsset.absolutePath)}>
