@@ -379,7 +379,7 @@ struct GodotProjectRemovalResult {
     destination: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DuplicateLocation {
     id: i64,
@@ -747,6 +747,40 @@ fn rebuild_search_index(connection: &Connection) -> Result<()> {
         "#,
         [],
     )?;
+    Ok(())
+}
+
+fn sync_search_index_for_assets(connection: &Connection, asset_ids: &[i64]) -> Result<()> {
+    if asset_ids.is_empty() {
+        return Ok(());
+    }
+    for chunk in asset_ids.chunks(500) {
+        let id_in_clause = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let delete_sql = format!("DELETE FROM assets_fts WHERE asset_id IN ({id_in_clause})");
+        connection.execute(&delete_sql, params_from_iter(chunk.iter().copied()))?;
+
+        let insert_sql = format!(
+            r#"
+            INSERT INTO assets_fts(asset_id, name, relative_path, pack_name, tags)
+            SELECT
+                a.id,
+                a.name,
+                a.relative_path,
+                p.name,
+                COALESCE(GROUP_CONCAT(DISTINCT t.name), '') || ' ' ||
+                COALESCE(GROUP_CONCAT(DISTINCT resource.name), '')
+            FROM assets a
+            JOIN packs p ON p.id = a.pack_id
+            LEFT JOIN asset_tags at ON at.asset_id = a.id
+            LEFT JOIN tags t ON t.id = at.tag_id
+            LEFT JOIN asset_dependencies dependency ON dependency.owner_asset_id = a.id
+            LEFT JOIN assets resource ON resource.id = dependency.dependency_asset_id
+            WHERE a.id IN ({id_in_clause}) AND a.is_primary = 1 AND a.excluded = 0 AND a.missing = 0
+            GROUP BY a.id
+            "#
+        );
+        connection.execute(&insert_sql, params_from_iter(chunk.iter().copied()))?;
+    }
     Ok(())
 }
 
@@ -1584,14 +1618,14 @@ fn hash_unhashed_assets(state: &AppState) -> Result<usize> {
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             rows
         };
-        let hashes = jobs
-            .into_iter()
+        let hashes: Vec<(i64, i64, i64, String)> = jobs
+            .into_par_iter()
             .filter_map(|(id, path, size, modified)| {
                 hash_file(Path::new(&path))
                     .ok()
                     .map(|hash| (id, size, modified, hash))
             })
-            .collect::<Vec<_>>();
+            .collect();
         let _guard = state
             .write_queue
             .lock()
@@ -1887,6 +1921,7 @@ fn clean_thumbnail_cache_from_connection(
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows
     };
+    connection.execute_batch("BEGIN TRANSACTION;")?;
     for (asset_id, path, version, asset_type) in stale_rows {
         let current_version = if asset_type == "model" {
             MODEL_THUMBNAIL_VERSION
@@ -1906,6 +1941,7 @@ fn clean_thumbnail_cache_from_connection(
             )?;
         }
     }
+    connection.execute_batch("COMMIT;")?;
     // Enforce the cap by evicting oldest referenced previews; they regenerate lazily.
     let mut files = fs::read_dir(&state.thumbnail_directory)?
         .filter_map(std::result::Result::ok)
@@ -1918,6 +1954,7 @@ fn clean_thumbnail_cache_from_connection(
         .collect::<Vec<_>>();
     files.sort_by_key(|entry| entry.2);
     let mut total = files.iter().map(|entry| entry.1).sum::<u64>();
+    connection.execute_batch("BEGIN TRANSACTION;")?;
     for (path, size, _) in files {
         if total <= DEFAULT_CACHE_LIMIT_BYTES {
             break;
@@ -1929,6 +1966,7 @@ fn clean_thumbnail_cache_from_connection(
         )?;
         total = total.saturating_sub(size);
     }
+    connection.execute_batch("COMMIT;")?;
     cache_status_from_connection(state, connection)
 }
 
@@ -2984,114 +3022,68 @@ fn query_asset_selections_from_connection(
 }
 
 fn query_assets_from_connection(request: AssetQuery, connection: &Connection) -> Result<AssetPage> {
-    let mut sql = String::from(
-        r#"
-        SELECT
-            a.id, a.pack_id, p.name, a.name, a.relative_path, a.absolute_path,
-            a.extension, a.asset_type, a.size_bytes, a.modified_at, a.width, a.height,
-            a.triangles, a.vertices,
-            a.thumbnail_path,
-            COALESCE((
-                SELECT json_group_array(json_object(
-                    'id', variant.id,
-                    'extension', variant.extension,
-                    'assetType', variant.asset_type,
-                    'fileType', variant.file_type,
-                    'usage', variant.usage,
-                    'mapRole', variant.map_role,
-                    'resolution', variant.resolution,
-                    'triangles', variant.triangles,
-                    'vertices', variant.vertices,
-                    'absolutePath', variant.absolute_path,
-                    'relativePath', variant.relative_path,
-                    'sizeBytes', variant.size_bytes
-                ))
-                FROM assets variant
-                WHERE variant.pack_id = a.pack_id
-                  AND variant.group_key = a.group_key
-            ), '[]'),
-            COALESCE((
-                SELECT json_group_array(json_object(
-                    'id', resource.id,
-                    'name', resource.name,
-                    'extension', resource.extension,
-                    'assetType', resource.asset_type,
-                    'fileType', resource.file_type,
-                    'usage', resource.usage,
-                    'mapRole', resource.map_role,
-                    'resolution', resource.resolution,
-                    'triangles', resource.triangles,
-                    'vertices', resource.vertices,
-                    'absolutePath', resource.absolute_path,
-                    'relativePath', resource.relative_path,
-                    'sizeBytes', resource.size_bytes,
-                    'thumbnailPath', resource.thumbnail_path
-                ))
-                FROM asset_dependencies dependency
-                JOIN assets resource ON resource.id = dependency.dependency_asset_id
-                WHERE dependency.owner_asset_id = a.id
-            ), '[]'),
-            COALESCE((
-                SELECT GROUP_CONCAT(DISTINCT tag.name)
-                FROM asset_tags tagged
-                JOIN tags tag ON tag.id = tagged.tag_id
-                WHERE tagged.asset_id = a.id
-            ), ''),
-            COALESCE((
-                SELECT GROUP_CONCAT(DISTINCT membership.collection_id)
-                FROM collection_assets membership
-                WHERE membership.asset_id = a.id
-            ), ''),
-            a.file_type, a.usage, a.map_role, a.resolution,
-            a.classification_confidence, a.classification_basis, a.missing,
-            EXISTS(SELECT 1 FROM classification_overrides override WHERE override.asset_id = a.id),
-            a.content_hash,
-            CASE WHEN a.content_hash IS NULL THEN 0 ELSE
-                (SELECT COUNT(*) FROM assets copy WHERE copy.content_hash = a.content_hash AND copy.missing = 0)
-            END,
-            COALESCE((
-                SELECT json_group_array(json_object(
-                    'id', copy.id,
-                    'packName', copy_pack.name,
-                    'relativePath', copy.relative_path,
-                    'absolutePath', copy.absolute_path,
-                    'sizeBytes', copy.size_bytes
-                ))
-                FROM assets copy
-                JOIN packs copy_pack ON copy_pack.id = copy.pack_id
-                WHERE copy.content_hash = a.content_hash
-                  AND copy.content_hash IS NOT NULL
-                  AND copy.missing = 0
-                  AND copy.id != a.id
-            ), '[]')
-        FROM assets a
-        JOIN packs p ON p.id = a.pack_id
-        "#,
-    );
     let (where_clause, mut values) = asset_query_filter(&request);
     let count_sql = format!("SELECT COUNT(*) FROM assets a WHERE {where_clause}");
     let total = connection.query_row(&count_sql, params_from_iter(values.iter()), |row| {
         row.get::<_, i64>(0)
     })?;
 
-    sql.push_str(" WHERE ");
-    sql.push_str(&where_clause);
-    sql.push_str(" ORDER BY ");
-    sql.push_str(&asset_query_order(&request));
-    sql.push_str(" LIMIT ? OFFSET ?");
+    let sql = format!(
+        r#"
+        SELECT
+            a.id, a.pack_id, p.name, a.name, a.relative_path, a.absolute_path,
+            a.extension, a.asset_type, a.size_bytes, a.modified_at, a.width, a.height,
+            a.triangles, a.vertices, a.thumbnail_path,
+            a.file_type, a.usage, a.map_role, a.resolution,
+            a.classification_confidence, a.classification_basis, a.missing,
+            EXISTS(SELECT 1 FROM classification_overrides override WHERE override.asset_id = a.id),
+            a.content_hash, a.group_key
+        FROM assets a
+        JOIN packs p ON p.id = a.pack_id
+        WHERE {where_clause}
+        ORDER BY {}
+        LIMIT ? OFFSET ?
+        "#,
+        asset_query_order(&request)
+    );
+
     let limit = request.limit.unwrap_or(160).clamp(1, 10_000);
     let offset = request.offset.unwrap_or(0).max(0);
     values.push(limit.into());
     values.push(offset.into());
 
+    struct RowBase {
+        id: i64,
+        pack_id: i64,
+        pack_name: String,
+        name: String,
+        relative_path: String,
+        absolute_path: String,
+        extension: String,
+        asset_type: String,
+        size_bytes: i64,
+        modified_at: i64,
+        width: Option<i64>,
+        height: Option<i64>,
+        triangles: Option<i64>,
+        vertices: Option<i64>,
+        thumbnail_path: Option<String>,
+        file_type: String,
+        usage: Option<String>,
+        map_role: Option<String>,
+        resolution: Option<String>,
+        classification_confidence: i64,
+        classification_basis: String,
+        missing: bool,
+        manual_classification: bool,
+        content_hash: Option<String>,
+        group_key: Option<String>,
+    }
+
     let mut statement = connection.prepare(&sql)?;
-    let assets = statement
+    let base_rows: Vec<RowBase> = statement
         .query_map(params_from_iter(values), |row| {
-            let variants: String = row.get(15)?;
-            let resources: String = row.get(16)?;
-            let tags: String = row.get(17)?;
-            let collection_ids: String = row.get(18)?;
-            Ok(Asset {
+            Ok(RowBase {
                 id: row.get(0)?,
                 pack_id: row.get(1)?,
                 pack_name: row.get(2)?,
@@ -3100,18 +3092,6 @@ fn query_assets_from_connection(request: AssetQuery, connection: &Connection) ->
                 absolute_path: row.get(5)?,
                 extension: row.get(6)?,
                 asset_type: row.get(7)?,
-                file_type: row.get(19)?,
-                usage: row.get(20)?,
-                map_role: row.get(21)?,
-                resolution: row.get(22)?,
-                classification_confidence: row.get(23)?,
-                classification_basis: row.get(24)?,
-                missing: row.get(25)?,
-                manual_classification: row.get(26)?,
-                content_hash: row.get(27)?,
-                duplicate_count: row.get(28)?,
-                duplicate_locations: serde_json::from_str(&row.get::<_, String>(29)?)
-                    .unwrap_or_default(),
                 size_bytes: row.get(8)?,
                 modified_at: row.get(9)?,
                 width: row.get(10)?,
@@ -3119,20 +3099,251 @@ fn query_assets_from_connection(request: AssetQuery, connection: &Connection) ->
                 triangles: row.get(12)?,
                 vertices: row.get(13)?,
                 thumbnail_path: row.get(14)?,
-                variants: serde_json::from_str(&variants).unwrap_or_default(),
-                resources: serde_json::from_str(&resources).unwrap_or_default(),
-                tags: tags
-                    .split(',')
-                    .filter(|tag| !tag.is_empty())
-                    .map(str::to_string)
-                    .collect(),
-                collection_ids: collection_ids
-                    .split(',')
-                    .filter_map(|id| id.parse::<i64>().ok())
-                    .collect(),
+                file_type: row.get(15)?,
+                usage: row.get(16)?,
+                map_role: row.get(17)?,
+                resolution: row.get(18)?,
+                classification_confidence: row.get(19)?,
+                classification_basis: row.get(20)?,
+                missing: row.get(21)?,
+                manual_classification: row.get(22)?,
+                content_hash: row.get(23)?,
+                group_key: row.get(24)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    if base_rows.is_empty() {
+        return Ok(AssetPage {
+            items: Vec::new(),
+            total,
+            has_more: offset < total,
+        });
+    }
+
+    let asset_ids: Vec<i64> = base_rows.iter().map(|row| row.id).collect();
+    let id_in_clause = asset_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+    // Batch fetch tags
+    let mut tags_by_asset: HashMap<i64, Vec<String>> = HashMap::new();
+    {
+        let tags_sql = format!(
+            "SELECT at.asset_id, t.name FROM asset_tags at JOIN tags t ON t.id = at.tag_id WHERE at.asset_id IN ({id_in_clause})"
+        );
+        let mut stmt = connection.prepare(&tags_sql)?;
+        let rows = stmt.query_map(params_from_iter(asset_ids.iter().copied()), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for entry in rows {
+            let (asset_id, tag_name) = entry?;
+            tags_by_asset.entry(asset_id).or_default().push(tag_name);
+        }
+    }
+
+    // Batch fetch collections
+    let mut collections_by_asset: HashMap<i64, Vec<i64>> = HashMap::new();
+    {
+        let coll_sql = format!(
+            "SELECT asset_id, collection_id FROM collection_assets WHERE asset_id IN ({id_in_clause})"
+        );
+        let mut stmt = connection.prepare(&coll_sql)?;
+        let rows = stmt.query_map(params_from_iter(asset_ids.iter().copied()), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for entry in rows {
+            let (asset_id, collection_id) = entry?;
+            collections_by_asset.entry(asset_id).or_default().push(collection_id);
+        }
+    }
+
+    // Batch fetch variants for items with group_key
+    let mut variants_by_group: HashMap<(i64, String), Vec<AssetVariant>> = HashMap::new();
+    let group_keys: Vec<(i64, String)> = base_rows
+        .iter()
+        .filter_map(|row| row.group_key.as_ref().map(|k| (row.pack_id, k.clone())))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    if !group_keys.is_empty() {
+        let mut variant_sql = String::from(
+            "SELECT pack_id, group_key, id, extension, asset_type, file_type, usage, map_role, resolution, triangles, vertices, absolute_path, relative_path, size_bytes FROM assets WHERE group_key IS NOT NULL AND ("
+        );
+        for (i, _) in group_keys.iter().enumerate() {
+            if i > 0 {
+                variant_sql.push_str(" OR ");
+            }
+            variant_sql.push_str("(pack_id = ? AND group_key = ?)");
+        }
+        variant_sql.push(')');
+        let mut variant_params = Vec::new();
+        for (pack_id, group_key) in &group_keys {
+            variant_params.push(rusqlite::types::Value::from(*pack_id));
+            variant_params.push(rusqlite::types::Value::from(group_key.clone()));
+        }
+        let mut stmt = connection.prepare(&variant_sql)?;
+        let rows = stmt.query_map(params_from_iter(variant_params), |row| {
+            let pack_id: i64 = row.get(0)?;
+            let group_key: String = row.get(1)?;
+            let variant = AssetVariant {
+                id: row.get(2)?,
+                extension: row.get(3)?,
+                asset_type: row.get(4)?,
+                file_type: row.get(5)?,
+                usage: row.get(6)?,
+                map_role: row.get(7)?,
+                resolution: row.get(8)?,
+                triangles: row.get(9)?,
+                vertices: row.get(10)?,
+                absolute_path: row.get(11)?,
+                relative_path: row.get(12)?,
+                size_bytes: row.get(13)?,
+            };
+            Ok(((pack_id, group_key), variant))
+        })?;
+        for entry in rows {
+            let (key, variant) = entry?;
+            variants_by_group.entry(key).or_default().push(variant);
+        }
+    }
+
+    // Batch fetch dependencies
+    let mut resources_by_asset: HashMap<i64, Vec<AssetResource>> = HashMap::new();
+    {
+        let dep_sql = format!(
+            r#"
+            SELECT
+                d.owner_asset_id, r.id, r.name, r.extension, r.asset_type, r.file_type,
+                r.usage, r.map_role, r.resolution, r.triangles, r.vertices,
+                r.absolute_path, r.relative_path, r.size_bytes, r.thumbnail_path
+            FROM asset_dependencies d
+            JOIN assets r ON r.id = d.dependency_asset_id
+            WHERE d.owner_asset_id IN ({id_in_clause})
+            "#
+        );
+        let mut stmt = connection.prepare(&dep_sql)?;
+        let rows = stmt.query_map(params_from_iter(asset_ids.iter().copied()), |row| {
+            let owner_id: i64 = row.get(0)?;
+            let resource = AssetResource {
+                id: row.get(1)?,
+                name: row.get(2)?,
+                extension: row.get(3)?,
+                asset_type: row.get(4)?,
+                file_type: row.get(5)?,
+                usage: row.get(6)?,
+                map_role: row.get(7)?,
+                resolution: row.get(8)?,
+                triangles: row.get(9)?,
+                vertices: row.get(10)?,
+                absolute_path: row.get(11)?,
+                relative_path: row.get(12)?,
+                size_bytes: row.get(13)?,
+                thumbnail_path: row.get(14)?,
+            };
+            Ok((owner_id, resource))
+        })?;
+        for entry in rows {
+            let (owner_id, resource) = entry?;
+            resources_by_asset.entry(owner_id).or_default().push(resource);
+        }
+    }
+
+    // Batch fetch duplicates for items with content_hash
+    let mut duplicate_locations_by_hash: HashMap<String, Vec<DuplicateLocation>> = HashMap::new();
+    let mut duplicate_count_by_hash: HashMap<String, i64> = HashMap::new();
+    let hashes: Vec<String> = base_rows
+        .iter()
+        .filter_map(|row| row.content_hash.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    if !hashes.is_empty() {
+        let hash_in_clause = hashes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let dup_sql = format!(
+            r#"
+            SELECT copy.content_hash, copy.id, copy_pack.name, copy.relative_path, copy.absolute_path, copy.size_bytes
+            FROM assets copy
+            JOIN packs copy_pack ON copy_pack.id = copy.pack_id
+            WHERE copy.content_hash IN ({hash_in_clause}) AND copy.missing = 0
+            "#
+        );
+        let mut stmt = connection.prepare(&dup_sql)?;
+        let rows = stmt.query_map(params_from_iter(hashes.iter().map(|h| h.as_str())), |row| {
+            let hash: String = row.get(0)?;
+            let dup = DuplicateLocation {
+                id: row.get(1)?,
+                pack_name: row.get(2)?,
+                relative_path: row.get(3)?,
+                absolute_path: row.get(4)?,
+                size_bytes: row.get(5)?,
+            };
+            Ok((hash, dup))
+        })?;
+        for entry in rows {
+            let (hash, dup) = entry?;
+            *duplicate_count_by_hash.entry(hash.clone()).or_insert(0) += 1;
+            duplicate_locations_by_hash.entry(hash).or_default().push(dup);
+        }
+    }
+
+    let assets: Vec<Asset> = base_rows
+        .into_iter()
+        .map(|row| {
+            let variants = row
+                .group_key
+                .as_ref()
+                .and_then(|k| variants_by_group.remove(&(row.pack_id, k.clone())))
+                .unwrap_or_default();
+            let resources = resources_by_asset.remove(&row.id).unwrap_or_default();
+            let tags = tags_by_asset.remove(&row.id).unwrap_or_default();
+            let collection_ids = collections_by_asset.remove(&row.id).unwrap_or_default();
+            let (duplicate_count, duplicate_locations) = if let Some(ref hash) = row.content_hash {
+                let count = duplicate_count_by_hash.get(hash).copied().unwrap_or(0);
+                let locs = duplicate_locations_by_hash
+                    .get(hash)
+                    .map(|list| list.iter().filter(|d| d.id != row.id).cloned().collect())
+                    .unwrap_or_default();
+                (count, locs)
+            } else {
+                (0, Vec::new())
+            };
+
+            Asset {
+                id: row.id,
+                pack_id: row.pack_id,
+                pack_name: row.pack_name,
+                name: row.name,
+                relative_path: row.relative_path,
+                absolute_path: row.absolute_path,
+                extension: row.extension,
+                asset_type: row.asset_type,
+                file_type: row.file_type,
+                usage: row.usage,
+                map_role: row.map_role,
+                resolution: row.resolution,
+                classification_confidence: row.classification_confidence,
+                classification_basis: row.classification_basis,
+                missing: row.missing,
+                manual_classification: row.manual_classification,
+                content_hash: row.content_hash,
+                duplicate_count,
+                duplicate_locations,
+                size_bytes: row.size_bytes,
+                modified_at: row.modified_at,
+                width: row.width,
+                height: row.height,
+                triangles: row.triangles,
+                vertices: row.vertices,
+                thumbnail_path: row.thumbnail_path,
+                variants,
+                resources,
+                tags,
+                collection_ids,
+            }
+        })
+        .collect();
+
     let has_more = offset + (assets.len() as i64) < total;
     Ok(AssetPage {
         items: assets,
@@ -3178,7 +3389,7 @@ fn add_tags(asset_ids: Vec<i64>, name: String, state: State<'_, AppState>) -> Re
         }
     }
     transaction.commit()?;
-    rebuild_search_index(&connection)?;
+    sync_search_index_for_assets(&connection, &changed)?;
     Ok(changed)
 }
 
@@ -3210,7 +3421,7 @@ fn remove_tags(asset_ids: Vec<i64>, name: String, state: State<'_, AppState>) ->
         }
     }
     transaction.commit()?;
-    rebuild_search_index(&connection)?;
+    sync_search_index_for_assets(&connection, &changed)?;
     Ok(changed)
 }
 
@@ -4602,7 +4813,7 @@ fn set_assets_excluded_from_connection(
         }
     }
     transaction.commit()?;
-    rebuild_search_index(&connection)
+    sync_search_index_for_assets(connection, asset_ids)
 }
 
 #[tauri::command]
@@ -4708,7 +4919,7 @@ fn set_classification_override(
         recompute_asset_dependencies(&transaction, Some(pack_id))?;
     }
     transaction.commit()?;
-    rebuild_search_index(&connection)?;
+    sync_search_index_for_assets(&connection, &asset_ids)?;
     Ok(snapshots)
 }
 
@@ -4761,7 +4972,7 @@ fn reset_classification_override(
                 .ok()
         })
         .collect::<HashSet<_>>();
-    for asset_id in asset_ids {
+    for asset_id in &asset_ids {
         transaction.execute(
             "DELETE FROM classification_overrides WHERE asset_id = ?1",
             params![asset_id],
@@ -4774,7 +4985,7 @@ fn reset_classification_override(
         recompute_asset_dependencies(&transaction, Some(pack_id))?;
     }
     transaction.commit()?;
-    rebuild_search_index(&connection)?;
+    sync_search_index_for_assets(&connection, &asset_ids)?;
     Ok(snapshots)
 }
 
@@ -4804,6 +5015,7 @@ fn restore_classification_overrides(
                 .ok()
         })
         .collect::<HashSet<_>>();
+    let asset_ids: Vec<i64> = snapshots.iter().map(|s| s.asset_id).collect();
     for snapshot in snapshots {
         if snapshot.existed {
             transaction.execute(
@@ -4837,7 +5049,7 @@ fn restore_classification_overrides(
         recompute_asset_dependencies(&transaction, Some(pack_id))?;
     }
     transaction.commit()?;
-    rebuild_search_index(&connection)
+    sync_search_index_for_assets(&connection, &asset_ids)
 }
 
 #[tauri::command]

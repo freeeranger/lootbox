@@ -629,16 +629,29 @@ function App() {
   }, [activeProjectId, selection.kind, snapshot.projects, snapshotQuery.isPending]);
 
   assetsRef.current = assets;
+  const assetsById = useMemo(() => {
+    const map = new Map<number, Asset>();
+    for (const asset of assets) {
+      map.set(asset.id, asset);
+    }
+    return map;
+  }, [assets]);
+
   const selectedAsset = useMemo(() => {
     if (selectedId === null) return null;
-    return assets.find((asset) => asset.id === selectedId) ??
+    return assetsById.get(selectedId) ??
       selectedAssetCacheRef.current.get(selectedId) ?? null;
-  }, [assets, selectedId]);
-  const selectedAssets = useMemo(() => [...selectedIds].flatMap((id) => {
-    const asset = assets.find((candidate) => candidate.id === id) ??
-      selectedAssetCacheRef.current.get(id);
-    return asset ? [asset] : [];
-  }), [assets, selectedIds]);
+  }, [assetsById, selectedId]);
+
+  const selectedAssets = useMemo(() => {
+    const result: Asset[] = [];
+    for (const id of selectedIds) {
+      const asset = assetsById.get(id) ?? selectedAssetCacheRef.current.get(id);
+      if (asset) result.push(asset);
+    }
+    return result;
+  }, [assetsById, selectedIds]);
+
   const selectedDragPaths = useMemo(
     () => [...selectedIds].flatMap((id) => {
       const path = selectedPathCacheRef.current.get(id);
@@ -653,17 +666,26 @@ function App() {
   );
 
   const applyAssetSelection = useCallback((ids: Set<number>, activeId: number | null) => {
+    if (ids.size === 0) {
+      selectedAssetCacheRef.current.clear();
+      selectedPathCacheRef.current.clear();
+      selectedIdsRef.current = ids;
+      selectedIdRef.current = null;
+      setSelectedIds(ids);
+      setSelectedId(null);
+      return;
+    }
     const nextCache = new Map(
       [...selectedAssetCacheRef.current].filter(([id]) => ids.has(id)),
     );
-    for (const asset of assetsRef.current) {
-      if (ids.has(asset.id)) nextCache.set(asset.id, asset);
-    }
     const nextPathCache = new Map(
       [...selectedPathCacheRef.current].filter(([id]) => ids.has(id)),
     );
     for (const asset of assetsRef.current) {
-      if (ids.has(asset.id)) nextPathCache.set(asset.id, asset.absolutePath);
+      if (ids.has(asset.id)) {
+        nextCache.set(asset.id, asset);
+        nextPathCache.set(asset.id, asset.absolutePath);
+      }
     }
     selectedAssetCacheRef.current = nextCache;
     selectedPathCacheRef.current = nextPathCache;
