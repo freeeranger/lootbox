@@ -1,6 +1,6 @@
 import { lazy, memo, Suspense, useState, useSyncExternalStore } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Check, Clipboard, Copy, ExternalLink, FolderOpen, LoaderCircle, Pause, Play, RotateCcw, Trash2 } from "lucide-react";
+import { Check, Clipboard, Copy, ExternalLink, FolderMinus, FolderOpen, LoaderCircle, Pause, Play, RotateCcw, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   ContextMenu,
@@ -40,6 +40,7 @@ interface Props {
   onRemove: (asset: Asset) => void;
   onRestore: (asset: Asset) => void;
   removed: boolean;
+  projectAsset?: boolean;
   selectionCount: number;
   dragPaths: string[];
   onCopyPath: (path: string) => void;
@@ -106,6 +107,7 @@ function AssetCardComponent({
   onRemove,
   onRestore,
   removed,
+  projectAsset,
   selectionCount,
   dragPaths,
   onCopyPath,
@@ -296,7 +298,10 @@ function AssetCardComponent({
           </ContextMenuItem>
         ) : (
           <ContextMenuItem variant="destructive" onClick={() => onRemove(asset)}>
-            <Trash2 /> {selectionCount > 1 ? `Remove ${selectionCount} assets` : "Remove from Lootbox"}
+            {projectAsset ? <FolderMinus /> : <Trash2 />}
+            {projectAsset
+              ? selectionCount > 1 ? `Remove ${selectionCount} assets from project` : "Remove from project"
+              : selectionCount > 1 ? `Remove ${selectionCount} assets` : "Remove from Lootbox"}
           </ContextMenuItem>
         )}
       </ContextMenuContent>

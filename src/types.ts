@@ -63,6 +63,23 @@ export interface GodotExportPreview {
   selectedModelFormats: string[];
 }
 
+export interface GodotProjectRemovalPreview {
+  selected: number;
+  destination: string;
+  removeFiles: string[];
+  modifiedFiles: string[];
+  missingFiles: string[];
+  sharedFiles: string[];
+}
+
+export interface GodotProjectRemovalResult {
+  deleted: number;
+  keptModified: number;
+  cleanedMissing: number;
+  keptShared: number;
+  destination: string;
+}
+
 export interface TypeCount {
   assetType: AssetType;
   count: number;

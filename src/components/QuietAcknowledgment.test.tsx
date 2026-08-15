@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { FolderPlus } from "lucide-react";
 import { describe, expect, it, vi } from "vitest";
 import { EmptyState } from "./EmptyState";
-import { CatalogCompletionMark, ImportStageRail } from "./QuietAcknowledgment";
+import { ImportStageRail } from "./QuietAcknowledgment";
 
 describe("Quiet Acknowledgment", () => {
   it("keeps the empty archive action obvious", async () => {
@@ -29,11 +29,5 @@ describe("Quiet Acknowledgment", () => {
     expect(screen.getByText("Verify")).toHaveClass("text-foreground");
     expect(screen.getByText("Scan")).toHaveClass("text-muted-foreground");
     expect(container.querySelectorAll(".quiet-stage-settle")).toHaveLength(1);
-  });
-
-  it("renders a compact completion stamp", () => {
-    const { container } = render(<CatalogCompletionMark />);
-    expect(container.querySelector(".quiet-catalog-stamp")).toBeInTheDocument();
-    expect(container.querySelector(".quiet-catalog-check")).toBeInTheDocument();
   });
 });

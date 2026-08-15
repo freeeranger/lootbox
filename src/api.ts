@@ -16,6 +16,8 @@ import type {
   ProjectSummary,
   GodotExportResult,
   GodotExportPreview,
+  GodotProjectRemovalPreview,
+  GodotProjectRemovalResult,
 } from "./types";
 
 export const api = {
@@ -108,6 +110,16 @@ export const api = {
       projectId,
       assetIds,
       modelFormats: modelFormats ?? null,
+    }),
+  previewRemoveAssetsFromGodotProject: (projectId: number, assetIds: number[]) =>
+    invoke<GodotProjectRemovalPreview>("preview_remove_assets_from_godot_project", {
+      projectId,
+      assetIds,
+    }),
+  removeAssetsFromGodotProject: (projectId: number, assetIds: number[]) =>
+    invoke<GodotProjectRemovalResult>("remove_assets_from_godot_project", {
+      projectId,
+      assetIds,
     }),
   hashLibrary: () => invoke<number>("hash_library"),
   openAsset: (path: string) => invoke<void>("open_asset", { path }),

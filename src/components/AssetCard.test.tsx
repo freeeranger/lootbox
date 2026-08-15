@@ -53,6 +53,13 @@ describe("AssetCard compact previews", () => {
     expect(option).toHaveAttribute("tabindex", "0");
   });
 
+  it("offers project removal instead of Lootbox removal in a project view", async () => {
+    render(<AssetCard asset={asset} selected view="grid" removed={false} projectAsset selectionCount={1} dragPaths={[]} {...callbacks} {...optionProps} />);
+    fireEvent.contextMenu(screen.getByRole("option", { name: /tone/i }));
+    expect(await screen.findByText("Remove from project")).toBeInTheDocument();
+    expect(screen.queryByText("Remove from Lootbox")).not.toBeInTheDocument();
+  });
+
   it("keeps thumbnail failures local and offers retry", () => {
     const image = { ...asset, name: "wall", assetType: "image" as const, fileType: "image" as const, extension: "png" };
     const { container } = render(<AssetCard asset={image} selected={false} view="grid" removed={false} selectionCount={1} dragPaths={[]} {...callbacks} {...optionProps} />);

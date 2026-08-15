@@ -260,7 +260,7 @@ export function Sidebar({
                       variant="destructive"
                       onClick={() => onForgetProject(project)}
                     >
-                      <Trash2 /> Forget project
+                      <Trash2 /> Disconnect project…
                     </ContextMenuItem>
                   </ContextMenuContent>
                 </ContextMenu>

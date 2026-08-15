@@ -1,4 +1,3 @@
-import { Check } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ImportProgress } from "../types";
@@ -22,16 +21,6 @@ export function ArchiveEmptyMark({ icon: Icon }: { icon: LucideIcon }) {
         <span className="absolute right-2 bottom-2 left-2 h-px bg-border" />
       </div>
       <span className="absolute bottom-0 left-1/2 h-1.5 w-7 -translate-x-1/2 rounded-t-sm border-x border-t border-primary/55 bg-primary/10" />
-    </div>
-  );
-}
-
-export function CatalogCompletionMark() {
-  return (
-    <div className="quiet-catalog-stamp relative grid size-10 shrink-0 place-items-center rounded-md border border-primary/45 bg-primary/[0.07]" aria-hidden="true">
-      <span className="absolute top-1.5 left-1.5 size-1 border-t border-l border-primary/65" />
-      <span className="absolute right-1.5 bottom-1.5 size-1 border-r border-b border-primary/65" />
-      <Check className="quiet-catalog-check size-4 text-primary" strokeWidth={2.25} />
     </div>
   );
 }

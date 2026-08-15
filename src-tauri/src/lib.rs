@@ -328,6 +328,27 @@ struct GodotModelFormat {
     count: usize,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GodotProjectRemovalPreview {
+    selected: usize,
+    destination: String,
+    remove_files: Vec<String>,
+    modified_files: Vec<String>,
+    missing_files: Vec<String>,
+    shared_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GodotProjectRemovalResult {
+    deleted: usize,
+    kept_modified: usize,
+    cleaned_missing: usize,
+    kept_shared: usize,
+    destination: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DuplicateLocation {
@@ -2565,7 +2586,20 @@ fn asset_query_filter(request: &AssetQuery) -> (String, Vec<rusqlite::types::Val
         values.push(collection_id.into());
     }
     if let Some(project_id) = request.project_id {
-        conditions.push("EXISTS (SELECT 1 FROM project_exports selected_export WHERE selected_export.asset_id = a.id AND selected_export.project_id = ?)");
+        conditions.push(
+            r#"EXISTS (
+                SELECT 1
+                FROM project_exports selected_export
+                JOIN assets exported_asset ON exported_asset.id = selected_export.asset_id
+                WHERE selected_export.project_id = ?
+                  AND (
+                    exported_asset.id = a.id OR
+                    (a.group_key IS NOT NULL
+                      AND exported_asset.pack_id = a.pack_id
+                      AND exported_asset.group_key = a.group_key)
+                  )
+            )"#,
+        );
         values.push(project_id.into());
     }
     if request.duplicates_only.unwrap_or(false) {
@@ -2987,13 +3021,26 @@ fn delete_collection(collection_id: i64, state: State<'_, AppState>) -> Result<(
 fn project_summary(connection: &Connection, project_id: i64) -> Result<ProjectSummary> {
     Ok(connection.query_row(
         r#"
-        SELECT project.id, project.name, project.root_path,
-               COUNT(DISTINCT CASE WHEN asset.is_primary = 1 AND asset.missing = 0 THEN asset.id END)
+        SELECT project.id, project.name, project.root_path, (
+            SELECT COUNT(*)
+            FROM assets primary_asset
+            WHERE primary_asset.is_primary = 1
+              AND primary_asset.missing = 0
+              AND EXISTS (
+                SELECT 1
+                FROM project_exports exported
+                JOIN assets exported_asset ON exported_asset.id = exported.asset_id
+                WHERE exported.project_id = project.id
+                  AND (
+                    exported_asset.id = primary_asset.id OR
+                    (primary_asset.group_key IS NOT NULL
+                      AND exported_asset.pack_id = primary_asset.pack_id
+                      AND exported_asset.group_key = primary_asset.group_key)
+                  )
+              )
+        )
         FROM projects project
-        LEFT JOIN project_exports exported ON exported.project_id = project.id
-        LEFT JOIN assets asset ON asset.id = exported.asset_id
         WHERE project.id = ?1
-        GROUP BY project.id
         "#,
         params![project_id],
         |row| {
@@ -3377,6 +3424,110 @@ fn preview_assets_to_godot_from_connection(
     })
 }
 
+fn ensure_godot_export_root(root: &Path) -> Result<PathBuf> {
+    let root_metadata = fs::symlink_metadata(root)?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(LootboxError::ProjectExport(
+            "the project folder is not a regular directory".into(),
+        ));
+    }
+    let assets_root = root.join("assets");
+    for directory in [&assets_root, &assets_root.join("lootbox")] {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(LootboxError::ProjectExport(
+                    "the project export folder contains an unexpected symbolic link".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(directory)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(assets_root.join("lootbox"))
+}
+
+fn project_path_contains_symlink(root: &Path, path: &Path) -> Result<bool> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        LootboxError::ProjectExport("a tracked export path is outside the project".into())
+    })?;
+    let relative = safe_export_relative_path(&relative.to_string_lossy())?;
+    let mut current = root.to_path_buf();
+    if fs::symlink_metadata(&current)?.file_type().is_symlink() {
+        return Ok(true);
+    }
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return Ok(true),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(false)
+}
+
+fn write_godot_manifest(
+    connection: &Connection,
+    project_id: i64,
+    project_name: &str,
+    export_root: &Path,
+) -> Result<()> {
+    let manifest_entries = {
+        let mut statement = connection.prepare(
+            r#"
+            SELECT asset.id, pack.name, asset.relative_path, exported.exported_path,
+                   exported.content_hash, exported.exported_at
+            FROM project_exports exported
+            JOIN assets asset ON asset.id = exported.asset_id
+            JOIN packs pack ON pack.id = asset.pack_id
+            WHERE exported.project_id = ?1
+            ORDER BY pack.name COLLATE NOCASE, asset.relative_path COLLATE NOCASE
+            "#,
+        )?;
+        let entries = statement
+            .query_map(params![project_id], |row| {
+                Ok(serde_json::json!({
+                    "assetId": row.get::<_, i64>(0)?,
+                    "pack": row.get::<_, String>(1)?,
+                    "sourcePath": row.get::<_, String>(2)?,
+                    "exportedPath": row.get::<_, String>(3)?,
+                    "sha256": row.get::<_, Option<String>>(4)?,
+                    "exportedAt": row.get::<_, String>(5)?,
+                }))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        entries
+    };
+    let manifest = serde_json::json!({
+        "format": 1,
+        "generator": "Lootbox",
+        "project": project_name,
+        "assets": manifest_entries,
+    });
+    let bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| LootboxError::ProjectExport(error.to_string()))?;
+    let temporary = export_root.join(format!(
+        ".lootbox-manifest-{}-{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    fs::rename(&temporary, export_root.join("lootbox-manifest.json"))?;
+    Ok(())
+}
+
 fn export_assets_to_godot_from_connection(
     connection: &mut Connection,
     project_id: i64,
@@ -3393,8 +3544,7 @@ fn export_assets_to_godot_from_connection(
     let physical_ids =
         collect_godot_export_selection(connection, asset_ids, model_formats)?.physical_ids;
 
-    let export_root = root.join("assets").join("lootbox");
-    fs::create_dir_all(&export_root)?;
+    let export_root = ensure_godot_export_root(&root)?;
     let mut copied = 0;
     let mut unchanged = 0;
     for asset_id in physical_ids {
@@ -3474,47 +3624,302 @@ fn export_assets_to_godot_from_connection(
         )?;
     }
 
-    let manifest_entries = {
-        let mut statement = connection.prepare(
-            r#"
-            SELECT asset.id, pack.name, asset.relative_path, exported.exported_path,
-                   exported.content_hash, exported.exported_at
-            FROM project_exports exported
-            JOIN assets asset ON asset.id = exported.asset_id
-            JOIN packs pack ON pack.id = asset.pack_id
-            WHERE exported.project_id = ?1
-            ORDER BY pack.name COLLATE NOCASE, asset.relative_path COLLATE NOCASE
-            "#,
-        )?;
-        let entries = statement
-            .query_map(params![project_id], |row| {
-                Ok(serde_json::json!({
-                    "assetId": row.get::<_, i64>(0)?,
-                    "pack": row.get::<_, String>(1)?,
-                    "sourcePath": row.get::<_, String>(2)?,
-                    "exportedPath": row.get::<_, String>(3)?,
-                    "sha256": row.get::<_, Option<String>>(4)?,
-                    "exportedAt": row.get::<_, String>(5)?,
-                }))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        entries
-    };
-    let manifest = serde_json::json!({
-        "format": 1,
-        "generator": "Lootbox",
-        "project": project.name,
-        "assets": manifest_entries,
-    });
-    fs::write(
-        export_root.join("lootbox-manifest.json"),
-        serde_json::to_vec_pretty(&manifest)
-            .map_err(|error| LootboxError::ProjectExport(error.to_string()))?,
-    )?;
+    write_godot_manifest(connection, project_id, &project.name, &export_root)?;
     Ok(GodotExportResult {
         copied,
         unchanged,
         destination: "res://assets/lootbox".into(),
+    })
+}
+
+struct GodotProjectRemovalFile {
+    path: PathBuf,
+    expected_hash: String,
+}
+
+struct GodotProjectRemovalPlan {
+    preview: GodotProjectRemovalPreview,
+    delete_files: Vec<GodotProjectRemovalFile>,
+    untrack_ids: Vec<i64>,
+}
+
+fn tracked_project_export(
+    connection: &Connection,
+    project_id: i64,
+    asset_id: i64,
+) -> Result<Option<(String, Option<String>)>> {
+    Ok(connection
+        .query_row(
+            "SELECT exported_path, content_hash FROM project_exports WHERE project_id = ?1 AND asset_id = ?2",
+            params![project_id, asset_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+fn safe_tracked_project_path(export_root: &Path, tracked_path: &str) -> Result<(PathBuf, String)> {
+    let path = PathBuf::from(tracked_path);
+    let relative = path.strip_prefix(export_root).map_err(|_| {
+        LootboxError::ProjectExport("a tracked export path is outside assets/lootbox".into())
+    })?;
+    let relative = safe_export_relative_path(&relative.to_string_lossy())?;
+    if relative.as_os_str().is_empty() {
+        return Err(LootboxError::ProjectExport(
+            "a tracked export path points at the export folder".into(),
+        ));
+    }
+    Ok((
+        export_root.join(&relative),
+        relative.to_string_lossy().to_string(),
+    ))
+}
+
+fn project_tracks_dependency_owner(
+    connection: &Connection,
+    project_id: i64,
+    owner_id: i64,
+    pack_id: i64,
+    group_key: Option<&str>,
+) -> Result<bool> {
+    if let Some(group_key) = group_key {
+        Ok(connection.query_row(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM project_exports exported
+                JOIN assets exported_asset ON exported_asset.id = exported.asset_id
+                WHERE exported.project_id = ?1
+                  AND exported_asset.pack_id = ?2
+                  AND exported_asset.group_key = ?3
+            )
+            "#,
+            params![project_id, pack_id, group_key],
+            |row| row.get(0),
+        )?)
+    } else {
+        Ok(connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_exports WHERE project_id = ?1 AND asset_id = ?2)",
+            params![project_id, owner_id],
+            |row| row.get(0),
+        )?)
+    }
+}
+
+fn plan_assets_from_godot_project_removal(
+    connection: &Connection,
+    project_id: i64,
+    asset_ids: &[i64],
+) -> Result<GodotProjectRemovalPlan> {
+    let project = project_summary(connection, project_id)?;
+    let root = PathBuf::from(&project.root_path);
+    if !root.join("project.godot").is_file() {
+        return Err(LootboxError::InvalidGodotProject(
+            "project.godot is missing".into(),
+        ));
+    }
+    let export_root = root.join("assets").join("lootbox");
+    let requested_ids = asset_ids.iter().copied().collect::<HashSet<_>>();
+    let mut selected_groups = HashSet::<(i64, String)>::new();
+    let mut selected_singles = HashSet::<i64>::new();
+    let mut candidate_ids = HashSet::<i64>::new();
+    let mut selected = 0;
+
+    for asset_id in requested_ids {
+        let asset: Option<(i64, Option<String>)> = connection
+            .query_row(
+                "SELECT pack_id, group_key FROM assets WHERE id = ?1",
+                params![asset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((pack_id, group_key)) = asset else {
+            continue;
+        };
+        let owner_ids = if let Some(group_key) = &group_key {
+            selected_groups.insert((pack_id, group_key.clone()));
+            let mut statement = connection
+                .prepare("SELECT id FROM assets WHERE pack_id = ?1 AND group_key = ?2")?;
+            let owner_ids = statement
+                .query_map(params![pack_id, group_key], |row| row.get::<_, i64>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            owner_ids
+        } else {
+            selected_singles.insert(asset_id);
+            vec![asset_id]
+        };
+        let before = candidate_ids.len();
+        for owner_id in &owner_ids {
+            if tracked_project_export(connection, project_id, *owner_id)?.is_some() {
+                candidate_ids.insert(*owner_id);
+            }
+        }
+        if candidate_ids.len() > before {
+            selected += 1;
+        }
+        for owner_id in owner_ids {
+            let mut statement = connection.prepare(
+                "SELECT dependency_asset_id FROM asset_dependencies WHERE owner_asset_id = ?1",
+            )?;
+            for dependency_id in statement
+                .query_map(params![owner_id], |row| row.get::<_, i64>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+            {
+                if tracked_project_export(connection, project_id, dependency_id)?.is_some() {
+                    candidate_ids.insert(dependency_id);
+                }
+            }
+        }
+    }
+
+    let mut remove_files = Vec::new();
+    let mut modified_files = Vec::new();
+    let mut missing_files = Vec::new();
+    let mut shared_files = Vec::new();
+    let mut delete_files = Vec::new();
+    let mut untrack_ids = Vec::new();
+    let mut sorted_candidates = candidate_ids.into_iter().collect::<Vec<_>>();
+    sorted_candidates.sort_unstable();
+    for candidate_id in sorted_candidates {
+        let Some((tracked_path, stored_hash)) =
+            tracked_project_export(connection, project_id, candidate_id)?
+        else {
+            continue;
+        };
+        let (path, display_path) = safe_tracked_project_path(&export_root, &tracked_path)?;
+        let mut shared = false;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT owner.id, owner.pack_id, owner.group_key
+            FROM asset_dependencies dependency
+            JOIN assets owner ON owner.id = dependency.owner_asset_id
+            WHERE dependency.dependency_asset_id = ?1
+            "#,
+        )?;
+        let owners = statement
+            .query_map(params![candidate_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for (owner_id, pack_id, group_key) in owners {
+            let selected_owner = group_key
+                .as_ref()
+                .is_some_and(|group_key| selected_groups.contains(&(pack_id, group_key.clone())))
+                || (group_key.is_none() && selected_singles.contains(&owner_id));
+            if !selected_owner
+                && project_tracks_dependency_owner(
+                    connection,
+                    project_id,
+                    owner_id,
+                    pack_id,
+                    group_key.as_deref(),
+                )?
+            {
+                shared = true;
+                break;
+            }
+        }
+        if shared {
+            shared_files.push(display_path);
+            continue;
+        }
+
+        if project_path_contains_symlink(&root, &path)? {
+            modified_files.push(display_path);
+            untrack_ids.push(candidate_id);
+            continue;
+        }
+
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                modified_files.push(display_path);
+                untrack_ids.push(candidate_id);
+            }
+            Ok(_) => {
+                let current_hash = hash_file(&path)?;
+                if stored_hash.as_deref() == Some(current_hash.as_str()) {
+                    remove_files.push(display_path);
+                    delete_files.push(GodotProjectRemovalFile {
+                        path,
+                        expected_hash: current_hash,
+                    });
+                    untrack_ids.push(candidate_id);
+                } else {
+                    modified_files.push(display_path);
+                    untrack_ids.push(candidate_id);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing_files.push(display_path);
+                untrack_ids.push(candidate_id);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    remove_files.sort();
+    modified_files.sort();
+    missing_files.sort();
+    shared_files.sort();
+    Ok(GodotProjectRemovalPlan {
+        preview: GodotProjectRemovalPreview {
+            selected,
+            destination: "res://assets/lootbox".into(),
+            remove_files,
+            modified_files,
+            missing_files,
+            shared_files,
+        },
+        delete_files,
+        untrack_ids,
+    })
+}
+
+fn remove_assets_from_godot_project_from_connection(
+    connection: &mut Connection,
+    project_id: i64,
+    asset_ids: &[i64],
+) -> Result<GodotProjectRemovalResult> {
+    let project = project_summary(connection, project_id)?;
+    let root = PathBuf::from(&project.root_path);
+    let plan = plan_assets_from_godot_project_removal(connection, project_id, asset_ids)?;
+    for file in &plan.delete_files {
+        if project_path_contains_symlink(&root, &file.path)? {
+            return Err(LootboxError::ProjectExport(
+                "an exported path changed while removal was being prepared; review the removal again"
+                    .into(),
+            ));
+        }
+        let metadata = fs::symlink_metadata(&file.path)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || hash_file(&file.path)? != file.expected_hash
+        {
+            return Err(LootboxError::ProjectExport(
+                "an exported file changed while removal was being prepared; review the removal again"
+                    .into(),
+            ));
+        }
+        fs::remove_file(&file.path)?;
+    }
+    let export_root = ensure_godot_export_root(&root)?;
+    let transaction = connection.transaction()?;
+    for asset_id in &plan.untrack_ids {
+        transaction.execute(
+            "DELETE FROM project_exports WHERE project_id = ?1 AND asset_id = ?2",
+            params![project_id, asset_id],
+        )?;
+    }
+    write_godot_manifest(&transaction, project_id, &project.name, &export_root)?;
+    transaction.commit()?;
+    Ok(GodotProjectRemovalResult {
+        deleted: plan.preview.remove_files.len(),
+        kept_modified: plan.preview.modified_files.len(),
+        cleaned_missing: plan.preview.missing_files.len(),
+        kept_shared: plan.preview.shared_files.len(),
+        destination: plan.preview.destination,
     })
 }
 
@@ -3559,6 +3964,40 @@ async fn export_assets_to_godot(
             &asset_ids,
             model_formats.as_deref(),
         )
+    })
+    .await
+    .map_err(|_| LootboxError::ImportWorker)?
+}
+
+#[tauri::command]
+async fn preview_remove_assets_from_godot_project(
+    project_id: i64,
+    asset_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<GodotProjectRemovalPreview> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = state.connect()?;
+        Ok(plan_assets_from_godot_project_removal(&connection, project_id, &asset_ids)?.preview)
+    })
+    .await
+    .map_err(|_| LootboxError::ImportWorker)?
+}
+
+#[tauri::command]
+async fn remove_assets_from_godot_project(
+    project_id: i64,
+    asset_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<GodotProjectRemovalResult> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = state
+            .write_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut connection = state.connect()?;
+        remove_assets_from_godot_project_from_connection(&mut connection, project_id, &asset_ids)
     })
     .await
     .map_err(|_| LootboxError::ImportWorker)?
@@ -4305,6 +4744,8 @@ pub fn run() {
             remove_project,
             preview_assets_to_godot,
             export_assets_to_godot,
+            preview_remove_assets_from_godot_project,
+            remove_assets_from_godot_project,
             hash_library,
             remove_pack,
             rename_pack,
@@ -5301,6 +5742,126 @@ mod tests {
         )
         .unwrap();
         assert_eq!(exported.copied, glb_only.total_files);
+    }
+
+    #[test]
+    fn removes_only_unchanged_project_exports_and_keeps_shared_or_modified_files() {
+        let temporary = tempfile::tempdir().unwrap();
+        let pack = temporary.path().join("Model Pack");
+        let project = temporary.path().join("Godot Game");
+        for directory in [
+            "Models/GLB",
+            "Models/other-formats/FBX",
+            "Models/other-formats/OBJ",
+            "Textures",
+        ] {
+            fs::create_dir_all(pack.join(directory)).unwrap();
+        }
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("project.godot"),
+            b"[application]\nconfig/name=\"Removal Test\"\n",
+        )
+        .unwrap();
+        fs::write(pack.join("Models/GLB/crate.glb"), b"crate glb").unwrap();
+        fs::write(
+            pack.join("Models/other-formats/FBX/crate.fbx"),
+            b"crate fbx",
+        )
+        .unwrap();
+        fs::write(
+            pack.join("Models/other-formats/OBJ/crate.mtl"),
+            b"map_Kd shared.png\n",
+        )
+        .unwrap();
+        fs::write(pack.join("Models/GLB/barrel.glb"), b"barrel glb").unwrap();
+        fs::write(
+            pack.join("Models/other-formats/OBJ/barrel.mtl"),
+            b"map_Kd shared.png\n",
+        )
+        .unwrap();
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([90, 60, 30, 255]))
+            .save(pack.join("Textures/shared.png"))
+            .unwrap();
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        import_pack_from_path(&mut connection, &pack, None, None, &mut |_| {}).unwrap();
+        connection
+            .execute(
+                "INSERT INTO projects(name, root_path) VALUES ('Removal Test', ?1)",
+                params![path_string(&project)],
+            )
+            .unwrap();
+        let project_id = connection.last_insert_rowid();
+        let crate_id: i64 = connection
+            .query_row(
+                "SELECT id FROM assets WHERE name = 'crate' AND extension = 'glb'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let barrel_id: i64 = connection
+            .query_row(
+                "SELECT id FROM assets WHERE name = 'barrel' AND extension = 'glb'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        export_assets_to_godot_from_connection(&mut connection, project_id, &[crate_id], None)
+            .unwrap();
+        export_assets_to_godot_from_connection(&mut connection, project_id, &[barrel_id], None)
+            .unwrap();
+
+        let crate_glb: String = connection
+            .query_row(
+                "SELECT exported_path FROM project_exports WHERE project_id = ?1 AND asset_id = ?2",
+                params![project_id, crate_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        fs::write(&crate_glb, b"project edited crate glb").unwrap();
+
+        let preview = plan_assets_from_godot_project_removal(&connection, project_id, &[crate_id])
+            .unwrap()
+            .preview;
+        assert_eq!(preview.selected, 1);
+        assert!(preview
+            .remove_files
+            .iter()
+            .any(|path| path.ends_with("crate.fbx")));
+        assert!(preview
+            .modified_files
+            .iter()
+            .any(|path| path.ends_with("crate.glb")));
+        assert!(preview
+            .shared_files
+            .iter()
+            .any(|path| path.ends_with("shared.png")));
+
+        let result = remove_assets_from_godot_project_from_connection(
+            &mut connection,
+            project_id,
+            &[crate_id],
+        )
+        .unwrap();
+        assert_eq!(result.deleted, 1);
+        assert_eq!(result.kept_modified, 1);
+        assert_eq!(result.kept_shared, 1);
+        assert!(Path::new(&crate_glb).is_file());
+        assert_eq!(
+            project_summary(&connection, project_id)
+                .unwrap()
+                .asset_count,
+            1
+        );
+
+        let manifest =
+            fs::read_to_string(project.join("assets/lootbox/lootbox-manifest.json")).unwrap();
+        assert!(!manifest.contains("crate.glb"));
+        assert!(!manifest.contains("crate.fbx"));
+        assert!(manifest.contains("barrel.glb"));
+        assert!(manifest.contains("shared.png"));
     }
 
     #[test]

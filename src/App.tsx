@@ -13,6 +13,7 @@ import {
   DatabaseBackup,
   ExternalLink,
   FolderCog,
+  FolderMinus,
   FolderOpen,
   FolderPlus,
   Gamepad2,
@@ -34,7 +35,7 @@ import { api } from "./api";
 import { AssetCard } from "./components/AssetCard";
 import { DetailPanel } from "./components/DetailPanel";
 import { EmptyState } from "./components/EmptyState";
-import { CatalogCompletionMark, ImportStageRail } from "./components/QuietAcknowledgment";
+import { ImportStageRail } from "./components/QuietAcknowledgment";
 import { Sidebar } from "./components/Sidebar";
 import {
   AlertDialog,
@@ -76,6 +77,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { toggleAudioPlayback } from "./audioPlayback";
+import { godotExportCompletionCopy } from "./godotExportCompletion";
 import { readProjectModelFormats, writeProjectModelFormats } from "./godotExportPreferences";
 import type {
   Asset,
@@ -87,6 +89,7 @@ import type {
   FilterOptions,
   GodotExportPreview,
   GodotExportResult,
+  GodotProjectRemovalPreview,
   LibrarySelection,
   LibrarySnapshot,
   PackSummary,
@@ -288,6 +291,10 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [errorContext, setErrorContext] = useState("ui");
   const [notice, setNotice] = useState<string | null>(null);
+  const [godotExportNotice, setGodotExportNotice] = useState<{
+    project: ProjectSummary;
+    result: GodotExportResult;
+  } | null>(null);
   const [undoRemoval, setUndoRemoval] = useState<{ ids: number[]; label: string } | null>(null);
   const [metadataUndo, setMetadataUndo] = useState<{ label: string; run: () => Promise<void> } | null>(null);
   const [creatingCollection, setCreatingCollection] = useState(false);
@@ -309,10 +316,16 @@ function App() {
     project: ProjectSummary;
     ids: number[];
     preview: GodotExportPreview | null;
-    result: GodotExportResult | null;
     selectedModelFormats: string[];
     loading: boolean;
     exporting: boolean;
+  } | null>(null);
+  const [godotProjectRemoval, setGodotProjectRemoval] = useState<{
+    project: ProjectSummary;
+    ids: number[];
+    preview: GodotProjectRemovalPreview | null;
+    loading: boolean;
+    removing: boolean;
   } | null>(null);
   const [renamingPack, setRenamingPack] = useState<PackSummary | null>(null);
   const [packName, setPackName] = useState("");
@@ -547,14 +560,15 @@ function App() {
   }, [reportError, serverQueryError]);
 
   useEffect(() => {
-    if (!notice || error) return;
+    if ((!notice && !godotExportNotice) || error) return;
     const timer = window.setTimeout(() => {
       setNotice(null);
+      setGodotExportNotice(null);
       setUndoRemoval(null);
       setMetadataUndo(null);
-    }, undoRemoval || metadataUndo ? 10_000 : 4_000);
+    }, undoRemoval || metadataUndo ? 10_000 : godotExportNotice ? 8_000 : 4_000);
     return () => window.clearTimeout(timer);
-  }, [error, metadataUndo, notice, undoRemoval]);
+  }, [error, godotExportNotice, metadataUndo, notice, undoRemoval]);
 
   const refresh = useCallback(async () => {
     await Promise.all([
@@ -909,10 +923,11 @@ function App() {
     };
     setError(null);
     setNotice(null);
+    setGodotExportNotice(null);
     setUndoRemoval(null);
     const savedModelFormats = readProjectModelFormats(projectId);
     const requestId = ++godotPreviewRequestRef.current;
-    setGodotExport({ project, ids, preview: null, result: null, selectedModelFormats: savedModelFormats ?? [], loading: true, exporting: false });
+    setGodotExport({ project, ids, preview: null, selectedModelFormats: savedModelFormats ?? [], loading: true, exporting: false });
     try {
       const preview = await api.previewAssetsToGodot(projectId, ids, savedModelFormats);
       if (requestId !== godotPreviewRequestRef.current) return;
@@ -964,8 +979,11 @@ function App() {
         godotExport.ids,
         godotExport.selectedModelFormats,
       );
-      setGodotExport((current) => current ? { ...current, result, exporting: false } : current);
-      await loadSnapshot();
+      setGodotExportNotice({ project: godotExport.project, result });
+      setGodotExport(null);
+      void loadSnapshot().catch((caught) => {
+        void api.logDiagnostic("error", "library-refresh", errorMessage(caught));
+      });
     } catch (caught) {
       setGodotExport((current) => current ? { ...current, exporting: false } : current);
       reportError(caught, "godot-export");
@@ -1286,15 +1304,19 @@ function App() {
       .catch((caught) => reportError(caught, "reveal-asset"));
   }, [reportError]);
 
+  const selectedRemovalTargets = useCallback((asset: Asset) => (
+    selectedIdsRef.current.has(asset.id)
+      ? [...selectedIdsRef.current].flatMap((id) => {
+          const candidate = selectedAssetCacheRef.current.get(id) ??
+            assets.find((item) => item.id === id);
+          return candidate ? [candidate] : [];
+        })
+      : [asset]
+  ), [assets]);
+
   const requestAssetRemoval = useCallback(
     (asset: Asset) => {
-      const targets = selectedIdsRef.current.has(asset.id)
-        ? [...selectedIdsRef.current].flatMap((id) => {
-            const candidate = selectedAssetCacheRef.current.get(id) ??
-              assets.find((item) => item.id === id);
-            return candidate ? [candidate] : [];
-          })
-        : [asset];
+      const targets = selectedRemovalTargets(asset);
       if (targets.length >= 10) {
         setConfirmAssetRemoval(targets);
         return;
@@ -1311,8 +1333,62 @@ function App() {
         })
         .catch((caught) => reportError(caught, "remove-asset"));
     },
-    [assets, clearAssetSelection, refresh, reportError],
+    [clearAssetSelection, refresh, reportError, selectedRemovalTargets],
   );
+
+  const requestProjectAssetRemoval = useCallback((asset: Asset) => {
+    if (selection.kind !== "project") return;
+    const project = snapshot.projects.find((candidate) => candidate.id === selection.projectId);
+    if (!project) return;
+    const ids = selectedIdsRef.current.has(asset.id)
+      ? [...selectedIdsRef.current]
+      : [asset.id];
+    if (ids.length === 0) return;
+    setError(null);
+    setNotice(null);
+    setGodotProjectRemoval({ project, ids, preview: null, loading: true, removing: false });
+    void api.previewRemoveAssetsFromGodotProject(project.id, ids)
+      .then((preview) => {
+        setGodotProjectRemoval((current) => current && current.project.id === project.id
+          ? { ...current, preview, loading: false }
+          : current);
+      })
+      .catch((caught) => {
+        setGodotProjectRemoval(null);
+        reportError(caught, "godot-project-removal-preview");
+      });
+  }, [reportError, selection, snapshot.projects]);
+
+  const requestDisplayedAssetRemoval = useCallback((asset: Asset) => {
+    if (selection.kind === "project") requestProjectAssetRemoval(asset);
+    else requestAssetRemoval(asset);
+  }, [requestAssetRemoval, requestProjectAssetRemoval, selection.kind]);
+
+  async function confirmProjectAssetRemoval() {
+    if (!godotProjectRemoval?.preview || godotProjectRemoval.removing) return;
+    const removal = godotProjectRemoval;
+    const preview = godotProjectRemoval.preview;
+    setGodotProjectRemoval((current) => current ? { ...current, removing: true } : current);
+    try {
+      const result = await api.removeAssetsFromGodotProject(removal.project.id, removal.ids);
+      const assetLabel = `${preview.selected.toLocaleString()} ${preview.selected === 1 ? "asset" : "assets"}`;
+      const details = [
+        result.deleted > 0 ? `${result.deleted.toLocaleString()} ${result.deleted === 1 ? "file" : "files"} deleted` : null,
+        result.keptModified > 0 ? `${result.keptModified.toLocaleString()} modified kept` : null,
+        result.keptShared > 0 ? `${result.keptShared.toLocaleString()} shared kept` : null,
+        result.cleanedMissing > 0 ? `${result.cleanedMissing.toLocaleString()} missing cleaned` : null,
+      ].filter(Boolean).join(" · ");
+      setGodotProjectRemoval(null);
+      clearAssetSelection();
+      setNotice(`${assetLabel} removed from ${removal.project.name}${details ? ` · ${details}` : ""}`);
+      void refresh().catch((caught) => {
+        void api.logDiagnostic("error", "library-refresh", errorMessage(caught));
+      });
+    } catch (caught) {
+      setGodotProjectRemoval((current) => current ? { ...current, removing: false } : current);
+      reportError(caught, "godot-project-removal");
+    }
+  }
 
   const reportCardError = useCallback((caught: unknown) => {
     reportError(caught, "asset-action");
@@ -1438,7 +1514,7 @@ function App() {
         selection.kind !== "removed"
       ) {
         event.preventDefault();
-        requestAssetRemoval(selectedAsset);
+        requestDisplayedAssetRemoval(selectedAsset);
       }
     };
     window.addEventListener("keydown", handleLibraryKeys);
@@ -1456,7 +1532,7 @@ function App() {
     openAsset,
     query,
     renamingPack,
-    requestAssetRemoval,
+    requestDisplayedAssetRemoval,
     reportError,
     selectedAsset,
     selectedId,
@@ -1464,6 +1540,10 @@ function App() {
     view,
     virtualizer,
   ]);
+
+  const godotCompletion = godotExportNotice
+    ? godotExportCompletionCopy(godotExportNotice.project.name, godotExportNotice.result)
+    : null;
 
   return (
     <div
@@ -1711,11 +1791,15 @@ function App() {
                 variant={selection.kind === "removed" ? "outline" : "ghost"}
                 size="sm"
                 className={cn("rounded-md", selection.kind !== "removed" && "text-destructive hover:text-destructive")}
-                aria-label={selection.kind === "removed" ? "Restore assets" : "Remove assets from Lootbox"}
-                title={selection.kind === "removed" ? "Restore" : "Remove from Lootbox"}
-                onClick={() => selection.kind === "removed" ? restoreAsset(selectedAsset) : requestAssetRemoval(selectedAsset)}
+                aria-label={selection.kind === "removed" ? "Restore assets" : selection.kind === "project" ? "Remove assets from project" : "Remove assets from Lootbox"}
+                title={selection.kind === "removed" ? "Restore" : selection.kind === "project" ? "Remove from project" : "Remove from Lootbox"}
+                onClick={() => selection.kind === "removed" ? restoreAsset(selectedAsset) : requestDisplayedAssetRemoval(selectedAsset)}
               >
-                {selection.kind === "removed" ? <><ArchiveRestore /> <span className="max-[1150px]:hidden">Restore</span></> : <><Trash2 /> <span className="max-[1150px]:hidden">Remove</span></>}
+                {selection.kind === "removed"
+                  ? <><ArchiveRestore /> <span className="max-[1150px]:hidden">Restore</span></>
+                  : selection.kind === "project"
+                    ? <><FolderMinus /> <span className="max-[1150px]:hidden">Remove</span></>
+                    : <><Trash2 /> <span className="max-[1150px]:hidden">Remove</span></>}
               </Button>
               <Button type="button" variant="ghost" size="icon-sm" className="rounded-md text-muted-foreground" onClick={clearAssetSelection} aria-label="Clear selection" title="Clear selection">
                 <X />
@@ -1786,15 +1870,9 @@ function App() {
                 )}
                 {selectedPack && <DropdownMenuSeparator />}
                 {selection.kind === "project" && selectedProject && (
-                  <>
-                    <DropdownMenuItem className="rounded-sm text-xs" disabled={!selectedProject.available} onClick={() => void api.openAsset(selectedProject.rootPath).catch((caught) => reportError(caught, "open-project"))}>
-                      <FolderOpen /> Open project folder
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem variant="destructive" className="rounded-sm text-xs" onClick={() => setConfirmProjectRemoval(selectedProject)}>
-                      <Trash2 /> Forget project
-                    </DropdownMenuItem>
-                  </>
+                  <DropdownMenuItem className="rounded-sm text-xs" disabled={!selectedProject.available} onClick={() => void api.openAsset(selectedProject.rootPath).catch((caught) => reportError(caught, "open-project"))}>
+                    <FolderOpen /> Open project folder
+                  </DropdownMenuItem>
                 )}
                 {selection.kind !== "project" && (
                   <DropdownMenuItem
@@ -1908,9 +1986,10 @@ function App() {
                         onContextSelect={selectAssetForContextMenu}
                         onOpen={openAsset}
                         onReveal={revealAsset}
-                        onRemove={requestAssetRemoval}
+                        onRemove={requestDisplayedAssetRemoval}
                         onRestore={restoreAsset}
                         removed={selection.kind === "removed"}
+                        projectAsset={selection.kind === "project"}
                         selectionCount={selectedIds.has(asset.id) ? selectedIds.size : 1}
                         dragPaths={selectedIds.has(asset.id) ? selectedDragPaths : [asset.absolutePath]}
                         onCopyPath={copyAssetPath}
@@ -2065,15 +2144,17 @@ function App() {
         </aside>
       )}
 
-      {(error || notice) && (
+      {(error || notice || godotExportNotice) && (
         <div className={cn(
           "fixed top-3 left-1/2 z-[80] flex max-w-[min(680px,calc(100vw-32px))] -translate-x-1/2 items-start gap-2 rounded-md border bg-popover px-3 py-2 text-xs shadow-lg",
           error ? "border-destructive/40" : "border-primary/35",
-        )} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>
+        )} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"} aria-atomic="true">
           {error ? <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" /> : <Check className="mt-0.5 size-4 shrink-0 text-primary" />}
           <div className="min-w-0 flex-1">
             {errorPresentation ? (
               <><p className="font-medium">{errorPresentation.title}</p><p className="mt-0.5 text-[11px] text-muted-foreground">{errorPresentation.message}</p></>
+            ) : godotCompletion ? (
+              <><p className="font-medium">{godotCompletion.title}</p><p className="mt-0.5 text-[11px] text-muted-foreground">{godotCompletion.message}</p></>
             ) : <span className="break-words">{notice}</span>}
           </div>
           {error && errorRecovery && (
@@ -2102,6 +2183,11 @@ function App() {
               {metadataUndo.label}
             </Button>
           )}
+          {!error && godotExportNotice?.project.rootPath && (
+            <Button type="button" variant="ghost" size="sm" className="shrink-0" onClick={() => void api.openAsset(godotExportNotice.project.rootPath).catch((caught) => reportError(caught, "open-project"))}>
+              <FolderOpen /> Open project
+            </Button>
+          )}
           <Button
             type="button"
             variant="ghost"
@@ -2111,6 +2197,7 @@ function App() {
               if (error) setError(null);
               else {
                 setNotice(null);
+                setGodotExportNotice(null);
                 setUndoRemoval(null);
               }
             }}
@@ -2127,35 +2214,7 @@ function App() {
         }
       }}>
         <DialogContent className="gap-4 sm:max-w-lg">
-          {godotExport?.result ? (
-            <>
-              <div className="quiet-completion-arrival flex items-start gap-3">
-                <CatalogCompletionMark />
-                <DialogHeader className="min-w-0 flex-1 gap-1">
-                  <DialogTitle className="text-sm">Export complete</DialogTitle>
-                  <DialogDescription className="text-xs">
-                    {godotExport.result.copied.toLocaleString()} files copied to {godotExport.project.name}
-                    {godotExport.result.unchanged > 0 ? ` · ${godotExport.result.unchanged.toLocaleString()} already current` : ""}.
-                  </DialogDescription>
-                </DialogHeader>
-              </div>
-              <div className="rounded-md border bg-muted/10 p-3 text-[11px]">
-                <p className="text-muted-foreground">Destination</p>
-                <p className="mt-1 font-mono text-foreground">{godotExport.result.destination}</p>
-                <p className="mt-2 text-muted-foreground">The manifest was updated so later exports can detect unchanged files.</p>
-              </div>
-              <DialogFooter>
-                <Button type="button" variant="ghost" size="sm" onClick={() => void navigator.clipboard.writeText(godotExport.preview?.manifest ?? "res://assets/lootbox/lootbox-manifest.json").then(() => setNotice("Manifest path copied")).catch((caught) => reportError(caught, "copy-manifest"))}>
-                  <Copy /> Copy manifest path
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={() => void api.openAsset(godotExport.project.rootPath).catch((caught) => reportError(caught, "open-project"))} disabled={!godotExport.project.rootPath}>
-                  <FolderOpen /> Open project folder
-                </Button>
-                <Button type="button" size="sm" onClick={() => setGodotExport(null)}>Done</Button>
-              </DialogFooter>
-            </>
-          ) : (
-            <>
+          <>
               <DialogHeader className="gap-1">
                 <DialogTitle className="text-sm">Review Godot export</DialogTitle>
                 <DialogDescription className="sr-only">Choose model formats and confirm the export contents.</DialogDescription>
@@ -2239,8 +2298,69 @@ function App() {
                   {godotExport?.exporting ? <><LoaderCircle className="animate-spin" /> Exporting…</> : `Export ${godotExport?.preview?.totalFiles.toLocaleString() ?? ""} files`}
                 </Button>
               </DialogFooter>
+          </>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={godotProjectRemoval !== null} onOpenChange={(open) => {
+        if (!open && !godotProjectRemoval?.removing) setGodotProjectRemoval(null);
+      }}>
+        <DialogContent className="gap-4 sm:max-w-lg">
+          <DialogHeader className="gap-1">
+            <DialogTitle className="text-sm">Remove from {godotProjectRemoval?.project.name ?? "project"}?</DialogTitle>
+            <DialogDescription className="text-xs">
+              Lootbox will remove its exported copies from this project. Original files in your asset packs stay untouched.
+            </DialogDescription>
+          </DialogHeader>
+          {!godotProjectRemoval?.preview ? (
+            <div className="space-y-3 py-6 text-center" role="status" aria-live="polite">
+              <LoaderCircle className="mx-auto size-5 animate-spin text-primary" />
+              <p className="text-xs text-muted-foreground">Checking tracked files and project changes…</p>
+            </div>
+          ) : (
+            <>
+              <dl className="grid grid-cols-[128px_minmax(0,1fr)] gap-y-2 rounded-md border bg-muted/10 p-3 text-[11px]">
+                <dt className="text-muted-foreground">Selected</dt><dd>{godotProjectRemoval.preview.selected.toLocaleString()} {godotProjectRemoval.preview.selected === 1 ? "asset" : "assets"}</dd>
+                <dt className="text-muted-foreground">Files removed</dt><dd>{godotProjectRemoval.preview.removeFiles.length.toLocaleString()}</dd>
+                <dt className="text-muted-foreground">Modified files kept</dt><dd>{godotProjectRemoval.preview.modifiedFiles.length.toLocaleString()}</dd>
+                <dt className="text-muted-foreground">Shared files kept</dt><dd>{godotProjectRemoval.preview.sharedFiles.length.toLocaleString()}</dd>
+                <dt className="text-muted-foreground">Missing records cleaned</dt><dd>{godotProjectRemoval.preview.missingFiles.length.toLocaleString()}</dd>
+                <dt className="text-muted-foreground">Location</dt><dd className="font-mono">{godotProjectRemoval.preview.destination}</dd>
+              </dl>
+              {godotProjectRemoval.preview.modifiedFiles.length > 0 && (
+                <div className="flex gap-2 rounded-md border bg-muted/10 p-2.5 text-[11px]">
+                  <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                  <p><span className="font-medium">Project edits are protected.</span> Modified files stay in place, and Lootbox stops tracking them.</p>
+                </div>
+              )}
+              {godotProjectRemoval.preview.sharedFiles.length > 0 && (
+                <p className="text-[11px] text-muted-foreground">Shared files remain tracked because other exported assets still need them.</p>
+              )}
+              <div>
+                <p className="mb-1.5 text-[11px] font-medium">Unchanged files removed</p>
+                <div className="quiet-scrollbar max-h-28 overflow-y-auto rounded-md border bg-background p-2 font-mono text-[11px] text-muted-foreground">
+                  {godotProjectRemoval.preview.removeFiles.length > 0
+                    ? godotProjectRemoval.preview.removeFiles.slice(0, 50).map((file) => <p key={file} className="truncate" title={file}>{file}</p>)
+                    : <p className="font-sans">No unchanged files need deletion.</p>}
+                  {godotProjectRemoval.preview.removeFiles.length > 50 && <p className="mt-1 text-foreground">+ {godotProjectRemoval.preview.removeFiles.length - 50} more</p>}
+                </div>
+              </div>
+              {godotProjectRemoval.removing && (
+                <div role="status" aria-live="polite" className="space-y-2">
+                  <p className="text-[11px] text-muted-foreground">Removing tracked copies and updating the manifest…</p>
+                  <Progress value={null} aria-label="Removing assets from Godot project" />
+                </div>
+              )}
             </>
           )}
+          <DialogFooter>
+            <Button type="button" variant="outline" size="sm" onClick={() => setGodotProjectRemoval(null)} disabled={godotProjectRemoval?.removing}>Cancel</Button>
+            <Button type="button" variant="destructive" size="sm" onClick={() => void confirmProjectAssetRemoval()} disabled={!godotProjectRemoval?.preview || godotProjectRemoval.loading || godotProjectRemoval.removing || godotProjectRemoval.preview.selected === 0}>
+              {godotProjectRemoval?.removing
+                ? <><LoaderCircle className="animate-spin" /> Removing…</>
+                : `Remove ${godotProjectRemoval?.preview?.selected.toLocaleString() ?? ""} ${godotProjectRemoval?.preview?.selected === 1 ? "asset" : "assets"}`}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -2545,12 +2665,12 @@ function App() {
       <AlertDialog open={confirmProjectRemoval !== null} onOpenChange={(open) => { if (!open) setConfirmProjectRemoval(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Forget {confirmProjectRemoval?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>Lootbox will remove the project and its export history from this library. Files already copied into the Godot project stay in place.</AlertDialogDescription>
+            <AlertDialogTitle>Disconnect {confirmProjectRemoval?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>Lootbox will remove this project connection and its export history. Files already copied into the Godot project stay in place.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => confirmProjectRemoval && void forgetGodotProject(confirmProjectRemoval)}>Forget project</AlertDialogAction>
+            <AlertDialogAction variant="destructive" onClick={() => confirmProjectRemoval && void forgetGodotProject(confirmProjectRemoval)}>Disconnect project</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
