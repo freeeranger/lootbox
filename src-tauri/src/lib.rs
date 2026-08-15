@@ -317,6 +317,15 @@ struct GodotExportPreview {
     destination: String,
     manifest: String,
     files: Vec<String>,
+    model_formats: Vec<GodotModelFormat>,
+    selected_model_formats: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GodotModelFormat {
+    extension: String,
+    count: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -3109,46 +3118,175 @@ fn collision_export_path(path: &Path, asset_id: i64, attempt: usize) -> PathBuf 
     path.with_file_name(name)
 }
 
-fn collect_godot_export_ids(connection: &Connection, asset_ids: &[i64]) -> Result<HashSet<i64>> {
-    let mut physical_ids = HashSet::new();
-    for asset_id in asset_ids {
-        let asset: Option<(i64, Option<String>)> = connection
+struct GodotExportSelection {
+    physical_ids: HashSet<i64>,
+    grouped_ids: HashSet<i64>,
+    dependency_ids: HashSet<i64>,
+    selected: usize,
+    model_formats: Vec<GodotModelFormat>,
+    selected_model_formats: Vec<String>,
+}
+
+fn collect_godot_export_selection(
+    connection: &Connection,
+    asset_ids: &[i64],
+    requested_model_formats: Option<&[String]>,
+) -> Result<GodotExportSelection> {
+    let requested_ids = asset_ids.iter().copied().collect::<HashSet<_>>();
+    let mut available_formats = std::collections::BTreeMap::<String, usize>::new();
+    let mut selected_assets = Vec::new();
+
+    for asset_id in &requested_ids {
+        let asset: Option<(i64, Option<String>, String, String)> = connection
             .query_row(
-                "SELECT pack_id, group_key FROM assets WHERE id = ?1 AND missing = 0",
+                "SELECT pack_id, group_key, asset_type, extension FROM assets WHERE id = ?1 AND missing = 0",
                 params![asset_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
-        let Some((pack_id, group_key)) = asset else {
+        let Some((pack_id, group_key, asset_type, extension)) = asset else {
             continue;
         };
-        physical_ids.insert(*asset_id);
+        if let Some(group_key) = &group_key {
+            let mut statement = connection.prepare(
+                "SELECT extension FROM assets WHERE pack_id = ?1 AND group_key = ?2 AND asset_type = 'model' AND missing = 0",
+            )?;
+            for format in statement
+                .query_map(params![pack_id, group_key], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+            {
+                *available_formats
+                    .entry(format.to_ascii_lowercase())
+                    .or_default() += 1;
+            }
+        } else if asset_type == "model" {
+            *available_formats
+                .entry(extension.to_ascii_lowercase())
+                .or_default() += 1;
+        }
+        selected_assets.push((*asset_id, pack_id, group_key, asset_type, extension));
+    }
+
+    let available_set = available_formats.keys().cloned().collect::<HashSet<_>>();
+    let requested_formats = requested_model_formats.map(|formats| {
+        formats
+            .iter()
+            .map(|format| format.trim_start_matches('.').to_ascii_lowercase())
+            .filter(|format| available_set.contains(format))
+            .collect::<HashSet<_>>()
+    });
+    let selected_format_set = match requested_formats {
+        Some(formats) if !formats.is_empty() => formats,
+        _ => available_set.clone(),
+    };
+
+    let mut physical_ids = HashSet::new();
+    let mut grouped_ids = HashSet::new();
+    let mut dependency_ids = HashSet::new();
+    let mut selected = 0;
+    for (asset_id, pack_id, group_key, asset_type, extension) in selected_assets {
+        let mut owner_ids = vec![asset_id];
+        let mut included_requested_asset = false;
         if let Some(group_key) = group_key {
             let mut statement = connection.prepare(
-                "SELECT id FROM assets WHERE pack_id = ?1 AND group_key = ?2 AND missing = 0",
+                "SELECT id, asset_type, extension FROM assets WHERE pack_id = ?1 AND group_key = ?2 AND missing = 0",
             )?;
-            physical_ids.extend(
-                statement
-                    .query_map(params![pack_id, group_key], |row| row.get::<_, i64>(0))?
-                    .collect::<std::result::Result<Vec<_>, _>>()?,
-            );
+            let group_assets = statement
+                .query_map(params![pack_id, &group_key], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let model_group = group_assets
+                .iter()
+                .any(|(_, grouped_type, _)| grouped_type == "model");
+            owner_ids = group_assets.iter().map(|(id, _, _)| *id).collect();
+            for (grouped_id, grouped_type, grouped_extension) in group_assets {
+                let include = if model_group {
+                    (grouped_type == "model"
+                        && selected_format_set.contains(&grouped_extension.to_ascii_lowercase()))
+                        || (grouped_extension.eq_ignore_ascii_case("mtl")
+                            && selected_format_set.contains("obj"))
+                } else {
+                    true
+                };
+                if include {
+                    physical_ids.insert(grouped_id);
+                    if grouped_id == asset_id || (asset_type == "model" && grouped_type == "model")
+                    {
+                        included_requested_asset = true;
+                    }
+                    if !requested_ids.contains(&grouped_id) {
+                        grouped_ids.insert(grouped_id);
+                    }
+                }
+            }
+        } else {
+            let include = asset_type != "model"
+                || selected_format_set.contains(&extension.to_ascii_lowercase());
+            if include {
+                physical_ids.insert(asset_id);
+                included_requested_asset = true;
+            }
         }
-        let mut statement = connection.prepare(
-            "SELECT dependency_asset_id FROM asset_dependencies WHERE owner_asset_id = ?1",
-        )?;
-        physical_ids.extend(
-            statement
-                .query_map(params![asset_id], |row| row.get::<_, i64>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?,
-        );
+        if included_requested_asset {
+            selected += 1;
+        }
+
+        for owner_id in owner_ids {
+            let mut statement = connection.prepare(
+                "SELECT dependency_asset_id FROM asset_dependencies WHERE owner_asset_id = ?1",
+            )?;
+            for dependency_id in statement
+                .query_map(params![owner_id], |row| row.get::<_, i64>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+            {
+                physical_ids.insert(dependency_id);
+                dependency_ids.insert(dependency_id);
+            }
+        }
     }
-    Ok(physical_ids)
+    grouped_ids.retain(|id| !requested_ids.contains(id));
+    dependency_ids.retain(|id| !requested_ids.contains(id) && !grouped_ids.contains(id));
+
+    let mut model_formats = available_formats
+        .into_iter()
+        .map(|(extension, count)| GodotModelFormat { extension, count })
+        .collect::<Vec<_>>();
+    model_formats.sort_by_key(|format| match format.extension.as_str() {
+        "glb" => 0,
+        "gltf" => 1,
+        "fbx" => 2,
+        "obj" => 3,
+        "dae" => 4,
+        "blend" => 5,
+        "usd" => 6,
+        "usdc" => 7,
+        "usda" => 8,
+        "usdz" => 9,
+        "3ds" => 10,
+        "stl" => 11,
+        "ply" => 12,
+        _ => 13,
+    });
+    Ok(GodotExportSelection {
+        physical_ids,
+        grouped_ids,
+        dependency_ids,
+        selected,
+        model_formats,
+        selected_model_formats: selected_format_set.into_iter().collect(),
+    })
 }
 
 fn preview_assets_to_godot_from_connection(
     connection: &Connection,
     project_id: i64,
     asset_ids: &[i64],
+    model_formats: Option<&[String]>,
 ) -> Result<GodotExportPreview> {
     let project = project_summary(connection, project_id)?;
     let root = PathBuf::from(&project.root_path);
@@ -3157,42 +3295,9 @@ fn preview_assets_to_godot_from_connection(
             "project.godot is missing".into(),
         ));
     }
-    let physical_ids = collect_godot_export_ids(connection, asset_ids)?;
-    let requested_ids = asset_ids.iter().copied().collect::<HashSet<_>>();
-    let mut grouped_ids = HashSet::new();
-    let mut dependency_ids = HashSet::new();
-    for asset_id in asset_ids {
-        let asset: Option<(i64, Option<String>)> = connection
-            .query_row(
-                "SELECT pack_id, group_key FROM assets WHERE id = ?1 AND missing = 0",
-                params![asset_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let Some((pack_id, group_key)) = asset else {
-            continue;
-        };
-        if let Some(group_key) = group_key {
-            let mut statement = connection.prepare(
-                "SELECT id FROM assets WHERE pack_id = ?1 AND group_key = ?2 AND missing = 0",
-            )?;
-            grouped_ids.extend(
-                statement
-                    .query_map(params![pack_id, group_key], |row| row.get::<_, i64>(0))?
-                    .collect::<std::result::Result<Vec<_>, _>>()?,
-            );
-        }
-        let mut statement = connection.prepare(
-            "SELECT dependency_asset_id FROM asset_dependencies WHERE owner_asset_id = ?1",
-        )?;
-        dependency_ids.extend(
-            statement
-                .query_map(params![asset_id], |row| row.get::<_, i64>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?,
-        );
-    }
-    grouped_ids.retain(|id| !requested_ids.contains(id));
-    dependency_ids.retain(|id| !requested_ids.contains(id) && !grouped_ids.contains(id));
+    let mut selection = collect_godot_export_selection(connection, asset_ids, model_formats)?;
+    selection.selected_model_formats.sort();
+    let physical_ids = &selection.physical_ids;
     let export_root = root.join("assets").join("lootbox");
     let mut files = Vec::new();
     let mut conflicts = 0;
@@ -3255,18 +3360,20 @@ fn preview_assets_to_godot_from_connection(
         files.push(format!("{pack_component}/{}", relative.to_string_lossy()));
     }
     files.sort();
-    let selected = requested_ids.intersection(&physical_ids).count();
+    let selected = selection.selected;
     Ok(GodotExportPreview {
         selected,
         related: physical_ids.len().saturating_sub(selected),
-        grouped: grouped_ids.len(),
-        dependencies: dependency_ids.len(),
+        grouped: selection.grouped_ids.len(),
+        dependencies: selection.dependency_ids.len(),
         total_files: files.len(),
         conflicts,
         conflict_files,
         destination: "res://assets/lootbox".into(),
         manifest: "res://assets/lootbox/lootbox-manifest.json".into(),
         files,
+        model_formats: selection.model_formats,
+        selected_model_formats: selection.selected_model_formats,
     })
 }
 
@@ -3274,6 +3381,7 @@ fn export_assets_to_godot_from_connection(
     connection: &mut Connection,
     project_id: i64,
     asset_ids: &[i64],
+    model_formats: Option<&[String]>,
 ) -> Result<GodotExportResult> {
     let project = project_summary(connection, project_id)?;
     let root = PathBuf::from(&project.root_path);
@@ -3282,7 +3390,8 @@ fn export_assets_to_godot_from_connection(
             "project.godot is missing".into(),
         ));
     }
-    let physical_ids = collect_godot_export_ids(connection, asset_ids)?;
+    let physical_ids =
+        collect_godot_export_selection(connection, asset_ids, model_formats)?.physical_ids;
 
     let export_root = root.join("assets").join("lootbox");
     fs::create_dir_all(&export_root)?;
@@ -3413,12 +3522,18 @@ fn export_assets_to_godot_from_connection(
 async fn preview_assets_to_godot(
     project_id: i64,
     asset_ids: Vec<i64>,
+    model_formats: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<GodotExportPreview> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let connection = state.connect()?;
-        preview_assets_to_godot_from_connection(&connection, project_id, &asset_ids)
+        preview_assets_to_godot_from_connection(
+            &connection,
+            project_id,
+            &asset_ids,
+            model_formats.as_deref(),
+        )
     })
     .await
     .map_err(|_| LootboxError::ImportWorker)?
@@ -3428,6 +3543,7 @@ async fn preview_assets_to_godot(
 async fn export_assets_to_godot(
     project_id: i64,
     asset_ids: Vec<i64>,
+    model_formats: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<GodotExportResult> {
     let state = state.inner().clone();
@@ -3437,7 +3553,12 @@ async fn export_assets_to_godot(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut connection = state.connect()?;
-        export_assets_to_godot_from_connection(&mut connection, project_id, &asset_ids)
+        export_assets_to_godot_from_connection(
+            &mut connection,
+            project_id,
+            &asset_ids,
+            model_formats.as_deref(),
+        )
     })
     .await
     .map_err(|_| LootboxError::ImportWorker)?
@@ -5017,7 +5138,8 @@ mod tests {
         fs::write(exported_root.join("brick_color.png"), b"project-owned file").unwrap();
 
         let preview =
-            preview_assets_to_godot_from_connection(&connection, project_id, &[asset_id]).unwrap();
+            preview_assets_to_godot_from_connection(&connection, project_id, &[asset_id], None)
+                .unwrap();
         assert_eq!(preview.selected, 1);
         assert_eq!(preview.related, 1);
         assert_eq!(preview.grouped, 1);
@@ -5028,7 +5150,7 @@ mod tests {
         assert_eq!(preview.destination, "res://assets/lootbox");
 
         let first =
-            export_assets_to_godot_from_connection(&mut connection, project_id, &[asset_id])
+            export_assets_to_godot_from_connection(&mut connection, project_id, &[asset_id], None)
                 .unwrap();
         assert_eq!(first.copied, 2);
         assert_eq!(first.unchanged, 0);
@@ -5045,10 +5167,140 @@ mod tests {
             .is_file());
 
         let second =
-            export_assets_to_godot_from_connection(&mut connection, project_id, &[asset_id])
+            export_assets_to_godot_from_connection(&mut connection, project_id, &[asset_id], None)
                 .unwrap();
         assert_eq!(second.copied, 0);
         assert_eq!(second.unchanged, 2);
+    }
+
+    #[test]
+    fn filters_model_export_formats_but_keeps_required_companions() {
+        let temporary = tempfile::tempdir().unwrap();
+        let pack = temporary.path().join("Model Pack");
+        let project = temporary.path().join("Godot Game");
+        fs::create_dir_all(pack.join("Models/GLB")).unwrap();
+        fs::create_dir_all(pack.join("Models/other-formats/FBX")).unwrap();
+        fs::create_dir_all(pack.join("Models/other-formats/OBJ")).unwrap();
+        fs::create_dir_all(pack.join("Textures")).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("project.godot"),
+            b"[application]\nconfig/name=\"Format Test\"\n",
+        )
+        .unwrap();
+        fs::write(pack.join("Models/GLB/crate.glb"), b"glb model").unwrap();
+        fs::write(
+            pack.join("Models/other-formats/FBX/crate.fbx"),
+            b"fbx model",
+        )
+        .unwrap();
+        fs::write(
+            pack.join("Models/other-formats/OBJ/crate.obj"),
+            b"mtllib crate.mtl\n",
+        )
+        .unwrap();
+        fs::write(
+            pack.join("Models/other-formats/OBJ/crate.mtl"),
+            b"map_Kd crate_diffuse.png\n",
+        )
+        .unwrap();
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([100, 70, 50, 255]))
+            .save(pack.join("Textures/crate_diffuse.png"))
+            .unwrap();
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        import_pack_from_path(&mut connection, &pack, None, None, &mut |_| {}).unwrap();
+        connection
+            .execute(
+                "INSERT INTO projects(name, root_path) VALUES ('Format Test', ?1)",
+                params![path_string(&project)],
+            )
+            .unwrap();
+        let project_id = connection.last_insert_rowid();
+        let asset_id: i64 = connection
+            .query_row(
+                "SELECT id FROM assets WHERE is_primary = 1 AND asset_type = 'model'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let all_formats =
+            preview_assets_to_godot_from_connection(&connection, project_id, &[asset_id], None)
+                .unwrap();
+        assert_eq!(
+            all_formats
+                .model_formats
+                .iter()
+                .map(|format| format.extension.as_str())
+                .collect::<Vec<_>>(),
+            vec!["glb", "fbx", "obj"]
+        );
+        assert_eq!(
+            all_formats.selected_model_formats,
+            vec!["fbx", "glb", "obj"]
+        );
+
+        let glb = vec!["glb".to_string()];
+        let glb_only = preview_assets_to_godot_from_connection(
+            &connection,
+            project_id,
+            &[asset_id],
+            Some(&glb),
+        )
+        .unwrap();
+        assert_eq!(glb_only.selected_model_formats, vec!["glb"]);
+        assert!(glb_only
+            .files
+            .iter()
+            .any(|file| file.ends_with("crate.glb")));
+        assert!(!glb_only
+            .files
+            .iter()
+            .any(|file| file.ends_with("crate.fbx")));
+        assert!(!glb_only
+            .files
+            .iter()
+            .any(|file| file.ends_with("crate.obj")));
+        assert!(!glb_only
+            .files
+            .iter()
+            .any(|file| file.ends_with("crate.mtl")));
+        assert!(glb_only
+            .files
+            .iter()
+            .any(|file| file.ends_with("crate_diffuse.png")));
+
+        let obj = vec!["obj".to_string()];
+        let obj_only = preview_assets_to_godot_from_connection(
+            &connection,
+            project_id,
+            &[asset_id],
+            Some(&obj),
+        )
+        .unwrap();
+        assert!(obj_only
+            .files
+            .iter()
+            .any(|file| file.ends_with("crate.obj")));
+        assert!(obj_only
+            .files
+            .iter()
+            .any(|file| file.ends_with("crate.mtl")));
+        assert!(obj_only
+            .files
+            .iter()
+            .any(|file| file.ends_with("crate_diffuse.png")));
+
+        let exported = export_assets_to_godot_from_connection(
+            &mut connection,
+            project_id,
+            &[asset_id],
+            Some(&glb),
+        )
+        .unwrap();
+        assert_eq!(exported.copied, glb_only.total_files);
     }
 
     #[test]

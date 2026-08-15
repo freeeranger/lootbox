@@ -252,6 +252,12 @@ The asset card is the signature recurring component. In grid view it uses a 4:3 
 
 Menus, selects, tooltips, and dialogs use Popover Charcoal, a faint light ring, short 100ms fade/zoom transitions, and restrained shadows. Tooltips invert to Paper White on Archive Black and open after a deliberate delay so dense icon controls remain calm.
 
+### Quiet Acknowledgment
+
+Delight is reserved for first use, truthful waiting, and meaningful completion. The empty archive, import stages, and completed Godot export use compact catalog geometry, Catalog Gold, and one 180–240ms settling sequence. The final state is visible without motion, reduced-motion users receive the same information immediately, and routine browsing remains still.
+
+**The Earned Response Rule.** Never celebrate ordinary clicks or saves. Acknowledgment must confirm real progress, never delay input, loop decoratively, add sound, or compete with asset previews.
+
 ## Do's and Don'ts
 
 ### Do:

@@ -162,6 +162,76 @@
   to { background-position: -20% 0; }
 }
 
+@keyframes quiet-empty-ready {
+  from {
+    clip-path: inset(0 0 12% 0);
+    filter: brightness(0.88);
+    transform: translateY(2px);
+  }
+  to {
+    clip-path: inset(0);
+    filter: brightness(1);
+    transform: translateY(0);
+  }
+}
+
+@keyframes quiet-import-arrival {
+  from {
+    clip-path: inset(8% 0 0 0 round 0.5rem);
+    filter: brightness(0.92);
+    transform: translateY(4px);
+  }
+  to {
+    clip-path: inset(0 round 0.5rem);
+    filter: brightness(1);
+    transform: translateY(0);
+  }
+}
+
+@keyframes quiet-stage-settle {
+  from { transform: scaleX(0.45); }
+  to { transform: scaleX(1); }
+}
+
+@keyframes quiet-catalog-stamp {
+  from {
+    clip-path: inset(14% round 0.335rem);
+    filter: brightness(0.9);
+    transform: scale(0.94);
+  }
+  to {
+    clip-path: inset(0 round 0.335rem);
+    filter: brightness(1);
+    transform: scale(1);
+  }
+}
+
+@keyframes quiet-catalog-check {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
+}
+
+.quiet-empty-ready {
+  animation: quiet-empty-ready 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.quiet-import-arrival {
+  animation: quiet-import-arrival 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.quiet-stage-settle {
+  animation: quiet-stage-settle 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.quiet-catalog-stamp {
+  animation: quiet-catalog-stamp 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.quiet-catalog-check {
+  stroke-dasharray: 24;
+  animation: quiet-catalog-check 220ms 50ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 .model-preview canvas {
   display: block;
 }
@@ -173,5 +243,13 @@
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .quiet-empty-ready,
+  .quiet-import-arrival,
+  .quiet-stage-settle,
+  .quiet-catalog-stamp,
+  .quiet-catalog-check {
+    animation: none !important;
   }
 }

@@ -34,6 +34,7 @@ import { api } from "./api";
 import { AssetCard } from "./components/AssetCard";
 import { DetailPanel } from "./components/DetailPanel";
 import { EmptyState } from "./components/EmptyState";
+import { CatalogCompletionMark, ImportStageRail } from "./components/QuietAcknowledgment";
 import { Sidebar } from "./components/Sidebar";
 import {
   AlertDialog,
@@ -47,6 +48,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -74,6 +76,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { toggleAudioPlayback } from "./audioPlayback";
+import { readProjectModelFormats, writeProjectModelFormats } from "./godotExportPreferences";
 import type {
   Asset,
   AssetQuery,
@@ -307,6 +310,7 @@ function App() {
     ids: number[];
     preview: GodotExportPreview | null;
     result: GodotExportResult | null;
+    selectedModelFormats: string[];
     loading: boolean;
     exporting: boolean;
   } | null>(null);
@@ -332,6 +336,7 @@ function App() {
   const selectionAnchorRef = useRef<number | null>(null);
   const pendingImportCountRef = useRef(0);
   const importJobsRef = useRef(new Set<string>());
+  const godotPreviewRequestRef = useRef(0);
   const [assetViewportWidth, setAssetViewportWidth] = useState(0);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
   const [leftPanelWidth, setLeftPanelWidth] = useState(() =>
@@ -905,14 +910,47 @@ function App() {
     setError(null);
     setNotice(null);
     setUndoRemoval(null);
-    setGodotExport({ project, ids, preview: null, result: null, loading: true, exporting: false });
+    const savedModelFormats = readProjectModelFormats(projectId);
+    const requestId = ++godotPreviewRequestRef.current;
+    setGodotExport({ project, ids, preview: null, result: null, selectedModelFormats: savedModelFormats ?? [], loading: true, exporting: false });
     try {
-      const preview = await api.previewAssetsToGodot(projectId, ids);
+      const preview = await api.previewAssetsToGodot(projectId, ids, savedModelFormats);
+      if (requestId !== godotPreviewRequestRef.current) return;
+      if (savedModelFormats) writeProjectModelFormats(projectId, preview.selectedModelFormats);
       setGodotExport((current) => current && current.project.id === projectId
-        ? { ...current, preview, loading: false }
+        ? { ...current, preview, selectedModelFormats: preview.selectedModelFormats, loading: false }
         : current);
     } catch (caught) {
+      if (requestId !== godotPreviewRequestRef.current) return;
       setGodotExport(null);
+      reportError(caught, "godot-export-preview");
+    }
+  }
+
+  async function updateGodotModelFormat(extension: string, included: boolean) {
+    if (!godotExport?.preview || godotExport.loading || godotExport.exporting) return;
+    const previousFormats = godotExport.selectedModelFormats;
+    const nextFormats = included
+      ? [...new Set([...previousFormats, extension])].sort()
+      : previousFormats.filter((format) => format !== extension);
+    if (nextFormats.length === 0) return;
+    const { project, ids } = godotExport;
+    const requestId = ++godotPreviewRequestRef.current;
+    setGodotExport((current) => current
+      ? { ...current, selectedModelFormats: nextFormats, loading: true }
+      : current);
+    try {
+      const preview = await api.previewAssetsToGodot(project.id, ids, nextFormats);
+      if (requestId !== godotPreviewRequestRef.current) return;
+      writeProjectModelFormats(project.id, preview.selectedModelFormats);
+      setGodotExport((current) => current && current.project.id === project.id
+        ? { ...current, preview, selectedModelFormats: preview.selectedModelFormats, loading: false }
+        : current);
+    } catch (caught) {
+      if (requestId !== godotPreviewRequestRef.current) return;
+      setGodotExport((current) => current && current.project.id === project.id
+        ? { ...current, selectedModelFormats: previousFormats, loading: false }
+        : current);
       reportError(caught, "godot-export-preview");
     }
   }
@@ -921,7 +959,11 @@ function App() {
     if (!godotExport?.preview || godotExport.exporting) return;
     setGodotExport((current) => current ? { ...current, exporting: true } : current);
     try {
-      const result = await api.exportAssetsToGodot(godotExport.project.id, godotExport.ids);
+      const result = await api.exportAssetsToGodot(
+        godotExport.project.id,
+        godotExport.ids,
+        godotExport.selectedModelFormats,
+      );
       setGodotExport((current) => current ? { ...current, result, exporting: false } : current);
       await loadSnapshot();
     } catch (caught) {
@@ -1895,7 +1937,7 @@ function App() {
               ) : selection.kind === "project" ? (
                 <EmptyState icon={Gamepad2} title="No project assets" description="Use Add to Godot from an asset selection." />
               ) : snapshot.totalAssets === 0 ? (
-                <EmptyState icon={FolderPlus} title="No asset packs" description="Import folders to build a local catalog. Lootbox indexes them in place and never modifies source files." action={{ label: "Import packs", onClick: () => void importPack() }} />
+                <EmptyState icon={FolderPlus} title="No asset packs" description="Import folders to build a local catalog. Lootbox indexes them in place and never modifies source files." action={{ label: "Import packs", onClick: () => void importPack() }} acknowledgment="archive" />
               ) : (
                 <EmptyState icon={SearchX} title="No matching assets" description="Try another search or clear the filters." action={activeFilters.length > 0 ? { label: "Clear filters", onClick: () => setFilters({ ...clearedFilters }) } : undefined} />
               )}
@@ -2079,18 +2121,24 @@ function App() {
       )}
 
       <Dialog open={godotExport !== null} onOpenChange={(open) => {
-        if (!open && !godotExport?.exporting) setGodotExport(null);
+        if (!open && !godotExport?.exporting) {
+          godotPreviewRequestRef.current += 1;
+          setGodotExport(null);
+        }
       }}>
         <DialogContent className="gap-4 sm:max-w-lg">
           {godotExport?.result ? (
             <>
-              <DialogHeader className="gap-1">
-                <DialogTitle className="flex items-center gap-2 text-sm"><Check className="size-4 text-primary" /> Export complete</DialogTitle>
-                <DialogDescription className="text-xs">
-                  {godotExport.result.copied.toLocaleString()} files copied to {godotExport.project.name}
-                  {godotExport.result.unchanged > 0 ? ` · ${godotExport.result.unchanged.toLocaleString()} already current` : ""}.
-                </DialogDescription>
-              </DialogHeader>
+              <div className="quiet-completion-arrival flex items-start gap-3">
+                <CatalogCompletionMark />
+                <DialogHeader className="min-w-0 flex-1 gap-1">
+                  <DialogTitle className="text-sm">Export complete</DialogTitle>
+                  <DialogDescription className="text-xs">
+                    {godotExport.result.copied.toLocaleString()} files copied to {godotExport.project.name}
+                    {godotExport.result.unchanged > 0 ? ` · ${godotExport.result.unchanged.toLocaleString()} already current` : ""}.
+                  </DialogDescription>
+                </DialogHeader>
+              </div>
               <div className="rounded-md border bg-muted/10 p-3 text-[11px]">
                 <p className="text-muted-foreground">Destination</p>
                 <p className="mt-1 font-mono text-foreground">{godotExport.result.destination}</p>
@@ -2110,15 +2158,42 @@ function App() {
             <>
               <DialogHeader className="gap-1">
                 <DialogTitle className="text-sm">Review Godot export</DialogTitle>
-                <DialogDescription className="text-xs">Nothing is copied until you confirm this plan.</DialogDescription>
+                <DialogDescription className="sr-only">Choose model formats and confirm the export contents.</DialogDescription>
               </DialogHeader>
-              {godotExport?.loading || !godotExport?.preview ? (
+              {!godotExport?.preview ? (
                 <div className="space-y-3 py-6 text-center" role="status" aria-live="polite">
                   <LoaderCircle className="mx-auto size-5 animate-spin text-primary" />
                   <p className="text-xs text-muted-foreground">Checking related files and destination conflicts…</p>
                 </div>
               ) : (
                 <>
+                  {godotExport.preview.modelFormats.length > 1 && (
+                    <fieldset className="rounded-md border bg-muted/10 px-3 py-2.5">
+                      <legend className="px-1 text-[11px] font-medium">Model formats</legend>
+                      <div className="flex flex-wrap gap-x-4 gap-y-2">
+                        {godotExport.preview.modelFormats.map((format) => {
+                          const checked = godotExport.selectedModelFormats.includes(format.extension);
+                          const lastSelected = checked && godotExport.selectedModelFormats.length === 1;
+                          return (
+                            <label key={format.extension} className="flex min-h-7 items-center gap-2 text-[11px]">
+                              <Checkbox
+                                checked={checked}
+                                disabled={godotExport.loading || godotExport.exporting || lastSelected}
+                                onCheckedChange={(nextChecked) => void updateGodotModelFormat(format.extension, Boolean(nextChecked))}
+                                aria-label={`${checked ? "Exclude" : "Include"} ${format.extension.toUpperCase()} models`}
+                              />
+                              <span className="font-medium uppercase">{format.extension}</span>
+                              <span className="text-muted-foreground">{format.count.toLocaleString()}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-1.5 flex min-h-4 items-center gap-1.5 text-[11px] text-muted-foreground" aria-live="polite">
+                        {godotExport.loading && <LoaderCircle className="size-3 animate-spin" />}
+                        <span>{godotExport.loading ? "Updating included files…" : "Required companion files stay included automatically."}</span>
+                      </div>
+                    </fieldset>
+                  )}
                   <dl className="grid grid-cols-[112px_minmax(0,1fr)] gap-y-2 rounded-md border bg-muted/10 p-3 text-[11px]">
                     <dt className="text-muted-foreground">Project</dt><dd className="min-w-0" title={godotExport.project.rootPath}><span className="block truncate">{godotExport.project.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{godotExport.project.rootPath}</span></dd>
                     <dt className="text-muted-foreground">Selected</dt><dd>{godotExport.preview.selected.toLocaleString()} assets</dd>
@@ -2156,8 +2231,11 @@ function App() {
                 </>
               )}
               <DialogFooter>
-                <Button type="button" variant="outline" size="sm" onClick={() => setGodotExport(null)} disabled={godotExport?.exporting}>Cancel</Button>
-                <Button type="button" size="sm" onClick={() => void confirmGodotExport()} disabled={!godotExport?.preview || godotExport.exporting}>
+                <Button type="button" variant="outline" size="sm" onClick={() => {
+                  godotPreviewRequestRef.current += 1;
+                  setGodotExport(null);
+                }} disabled={godotExport?.exporting}>Cancel</Button>
+                <Button type="button" size="sm" onClick={() => void confirmGodotExport()} disabled={!godotExport?.preview || godotExport.loading || godotExport.exporting}>
                   {godotExport?.exporting ? <><LoaderCircle className="animate-spin" /> Exporting…</> : `Export ${godotExport?.preview?.totalFiles.toLocaleString() ?? ""} files`}
                 </Button>
               </DialogFooter>
@@ -2517,7 +2595,7 @@ function App() {
       </AlertDialog>
 
       {importing && (
-        <div className="fixed right-4 bottom-4 z-50 w-80 rounded-lg border bg-popover/95 p-4 text-xs shadow-xl backdrop-blur-md" role="status" aria-live="polite" aria-atomic="true" aria-label="Import progress">
+        <div className="quiet-import-arrival fixed right-4 bottom-4 z-50 w-80 rounded-lg border bg-popover/95 p-4 text-xs shadow-xl backdrop-blur-md" role="status" aria-live="polite" aria-atomic="true" aria-label="Import progress">
           <div className="mb-3 flex items-start gap-2.5">
             <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-primary" />
             <div className="min-w-0 flex-1">
@@ -2528,9 +2606,11 @@ function App() {
                 ? "Scanning files"
                 : importProgress.phase === "hashing"
                   ? "Checking file contents"
+                : importProgress.phase === "indexing"
+                  ? "Indexing library"
                 : importProgress.phase === "finalizing"
-                  ? "Finishing import"
-                  : "Importing"}
+                  ? "Shelving assets"
+                  : "Import complete"}
             </span>
             <span className="mt-0.5 block text-[11px] text-muted-foreground">
               {pendingImportCount > 1 ? `${pendingImportCount} packs remaining` : "1 pack remaining"}
@@ -2542,6 +2622,7 @@ function App() {
               </span>
             )}
           </div>
+          <ImportStageRail phase={importProgress?.phase ?? null} />
           <Progress
             value={
               importProgress && importProgress.total > 0

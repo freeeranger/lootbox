@@ -97,10 +97,18 @@ export const api = {
     invoke<ProjectSummary>("add_godot_project", { path }),
   removeProject: (projectId: number) =>
     invoke<void>("remove_project", { projectId }),
-  previewAssetsToGodot: (projectId: number, assetIds: number[]) =>
-    invoke<GodotExportPreview>("preview_assets_to_godot", { projectId, assetIds }),
-  exportAssetsToGodot: (projectId: number, assetIds: number[]) =>
-    invoke<GodotExportResult>("export_assets_to_godot", { projectId, assetIds }),
+  previewAssetsToGodot: (projectId: number, assetIds: number[], modelFormats?: string[] | null) =>
+    invoke<GodotExportPreview>("preview_assets_to_godot", {
+      projectId,
+      assetIds,
+      modelFormats: modelFormats ?? null,
+    }),
+  exportAssetsToGodot: (projectId: number, assetIds: number[], modelFormats?: string[] | null) =>
+    invoke<GodotExportResult>("export_assets_to_godot", {
+      projectId,
+      assetIds,
+      modelFormats: modelFormats ?? null,
+    }),
   hashLibrary: () => invoke<number>("hash_library"),
   openAsset: (path: string) => invoke<void>("open_asset", { path }),
   revealAsset: (path: string) => invoke<void>("reveal_asset", { path }),

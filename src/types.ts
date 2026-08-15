@@ -59,6 +59,8 @@ export interface GodotExportPreview {
   destination: string;
   manifest: string;
   files: string[];
+  modelFormats: { extension: string; count: number }[];
+  selectedModelFormats: string[];
 }
 
 export interface TypeCount {
