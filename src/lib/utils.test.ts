@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collapseHomePath, truncateMiddle } from "./utils";
+import { collapseHomePath, formatTriangles, formatVertices, getAssetSpecs, truncateMiddle } from "./utils";
 
 describe("collapseHomePath", () => {
   it("collapses Linux /home/username paths", () => {
@@ -43,5 +43,69 @@ describe("truncateMiddle", () => {
     expect(truncateMiddle("")).toBe("");
     expect(truncateMiddle(null)).toBe("");
     expect(truncateMiddle(undefined)).toBe("");
+  });
+});
+
+describe("formatTriangles and formatVertices", () => {
+  it("formats triangle counts compactly", () => {
+    expect(formatTriangles(520)).toBe("520 tris");
+    expect(formatTriangles(1420)).toBe("1.4k tris");
+    expect(formatTriangles(25000)).toBe("25k tris");
+    expect(formatTriangles(1200000)).toBe("1.2M tris");
+    expect(formatTriangles(0)).toBe("");
+    expect(formatTriangles(null)).toBe("");
+  });
+
+  it("formats vertex counts compactly", () => {
+    expect(formatVertices(860)).toBe("860 verts");
+    expect(formatVertices(1890)).toBe("1.9k verts");
+    expect(formatVertices(32000)).toBe("32k verts");
+    expect(formatVertices(1500000)).toBe("1.5M verts");
+    expect(formatVertices(0)).toBe("");
+    expect(formatVertices(null)).toBe("");
+  });
+});
+
+describe("getAssetSpecs", () => {
+  it("extracts image and texture dimensions and resolution", () => {
+    expect(getAssetSpecs({
+      assetType: "image",
+      width: 2048,
+      height: 2048,
+      resolution: "2K",
+      mapRole: "normal_map",
+    })).toEqual({
+      primary: "2048 × 2048",
+      secondary: "2K · normal map",
+    });
+
+    expect(getAssetSpecs({
+      assetType: "image",
+      width: 1920,
+      height: 1080,
+    })).toEqual({
+      primary: "1920 × 1080",
+      secondary: null,
+    });
+  });
+
+  it("extracts model poly and vertex counts", () => {
+    expect(getAssetSpecs({
+      assetType: "model",
+      triangles: 14200,
+      vertices: 8940,
+    })).toEqual({
+      primary: "14k tris",
+      secondary: "8.9k verts",
+    });
+
+    expect(getAssetSpecs({
+      assetType: "model",
+      triangles: null,
+      vertices: null,
+    })).toEqual({
+      primary: null,
+      secondary: null,
+    });
   });
 });

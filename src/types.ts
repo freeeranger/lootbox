@@ -139,6 +139,8 @@ export interface Asset {
   modifiedAt: number;
   width: number | null;
   height: number | null;
+  triangles: number | null;
+  vertices: number | null;
   thumbnailPath: string | null;
   variants: AssetVariant[];
   resources: AssetResource[];
@@ -167,6 +169,8 @@ export interface AssetVariant {
   usage: "texture" | null;
   mapRole: string | null;
   resolution: string | null;
+  triangles: number | null;
+  vertices: number | null;
   absolutePath: string;
   relativePath: string;
   sizeBytes: number;
@@ -181,6 +185,8 @@ export interface AssetResource {
   usage: "texture" | null;
   mapRole: string | null;
   resolution: string | null;
+  triangles: number | null;
+  vertices: number | null;
   absolutePath: string;
   relativePath: string;
   sizeBytes: number;

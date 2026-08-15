@@ -2535,9 +2535,10 @@ function App() {
           ) : assets.length > 0 ? (
             <>
             {view === "list" && (
-              <div className="sticky top-0 z-10 grid h-8 grid-cols-[34px_minmax(130px,0.5fr)_minmax(0,1fr)_84px] items-center gap-3 border-b bg-background/95 px-4 text-[11px] font-medium text-muted-foreground backdrop-blur-sm">
+              <div className="sticky top-0 z-10 grid h-8 grid-cols-[34px_minmax(130px,0.8fr)_minmax(120px,0.7fr)_minmax(0,1.2fr)_84px] items-center gap-3 border-b bg-background/95 px-4 text-[11px] font-medium text-muted-foreground backdrop-blur-sm">
                 <span />
                 <span>Name</span>
+                <span>Specs</span>
                 <span>Location</span>
                 <span className="text-right">Format · size</span>
               </div>

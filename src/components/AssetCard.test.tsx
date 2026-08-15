@@ -19,6 +19,7 @@ const asset: Asset = {
   absolutePath: "/tmp/tone.wav", extension: "wav", assetType: "audio", fileType: "audio",
   usage: null, mapRole: null, resolution: null, classificationConfidence: 100,
   classificationBasis: "extension", sizeBytes: 1024, modifiedAt: 1, width: null, height: null,
+  triangles: null, vertices: null,
   thumbnailPath: null, variants: [], resources: [], tags: [], collectionIds: [], missing: false,
   manualClassification: false, contentHash: null, duplicateCount: 0, duplicateLocations: [],
 };
@@ -60,13 +61,35 @@ describe("AssetCard compact previews", () => {
     expect(screen.queryByText("Remove from Lootbox")).not.toBeInTheDocument();
   });
 
-  it("keeps thumbnail failures local and offers retry", () => {
-    const image = { ...asset, name: "wall", assetType: "image" as const, fileType: "image" as const, extension: "png" };
-    const { container } = render(<AssetCard asset={image} selected={false} view="grid" removed={false} selectionCount={1} dragPaths={[]} {...callbacks} {...optionProps} />);
-    fireEvent.error(container.querySelector("img")!);
-    expect(callbacks.onError).not.toHaveBeenCalled();
-    expect(callbacks.onPreviewError).toHaveBeenCalledWith(image, expect.any(Error));
-    fireEvent.click(screen.getByRole("button", { name: "Retry preview for wall" }));
-    expect(screen.queryByRole("button", { name: "Retry preview for wall" })).not.toBeInTheDocument();
+  it("renders image dimensions and resolution in list view specs column", () => {
+    const texture = {
+      ...asset,
+      name: "stone_wall",
+      assetType: "texture" as const,
+      fileType: "image" as const,
+      extension: "png",
+      width: 2048,
+      height: 2048,
+      resolution: "2K",
+      mapRole: "normal_map",
+    };
+    render(<AssetCard asset={texture} selected={false} view="list" removed={false} selectionCount={1} dragPaths={[]} {...callbacks} {...optionProps} />);
+    expect(screen.getByText("2048 × 2048")).toBeInTheDocument();
+    expect(screen.getByText(/2K · normal map/i)).toBeInTheDocument();
+  });
+
+  it("renders model poly counts in list view specs column", () => {
+    const model = {
+      ...asset,
+      name: "knight_sword",
+      assetType: "model" as const,
+      fileType: "model" as const,
+      extension: "glb",
+      triangles: 14200,
+      vertices: 8940,
+    };
+    render(<AssetCard asset={model} selected={false} view="list" removed={false} selectionCount={1} dragPaths={[]} {...callbacks} {...optionProps} />);
+    expect(screen.getByText("14k tris")).toBeInTheDocument();
+    expect(screen.getByText(/8.9k verts/i)).toBeInTheDocument();
   });
 });

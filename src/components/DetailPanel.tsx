@@ -382,12 +382,12 @@ export function DetailPanel({
                 <dd>{asset.width} × {asset.height}</dd>
               </>
             )}
-            {asset.assetType === "model" && modelStats && (
+            {asset.assetType === "model" && (modelStats != null || (asset.triangles != null && asset.triangles > 0)) && (
               <>
                 <dt className="text-muted-foreground">Triangles</dt>
-                <dd>{modelStats.triangles.toLocaleString()}</dd>
+                <dd>{(modelStats?.triangles ?? asset.triangles ?? 0).toLocaleString()}</dd>
                 <dt className="text-muted-foreground">Vertices</dt>
-                <dd>{modelStats.vertices.toLocaleString()}</dd>
+                <dd>{(modelStats?.vertices ?? asset.vertices ?? 0).toLocaleString()}</dd>
               </>
             )}
             <dt className="text-muted-foreground">Path</dt>

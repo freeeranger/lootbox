@@ -1,7 +1,7 @@
 import { lazy, memo, Suspense, useState, useSyncExternalStore } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Check, Clipboard, Copy, ExternalLink, FolderMinus, FolderOpen, LoaderCircle, Pause, Play, RotateCcw, Trash2 } from "lucide-react";
-import { cn, truncateMiddle } from "@/lib/utils";
+import { cn, formatTriangles, getAssetSpecs, truncateMiddle } from "@/lib/utils";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -129,6 +129,7 @@ function AssetCardComponent({
       ? asset.absolutePath
       : null);
   const usableImageSource = imageSource === failedImageSource ? null : imageSource;
+  const specs = getAssetSpecs(asset);
 
   function startDrag(event: React.DragEvent<HTMLButtonElement>) {
     const paths = dragPaths.length > 0 ? dragPaths : [asset.absolutePath];
@@ -163,7 +164,7 @@ function AssetCardComponent({
             className={cn(
               "group block w-full min-w-0 rounded-md text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60 cursor-pointer",
               view === "list" &&
-                "grid h-12 grid-cols-[34px_minmax(130px,0.5fr)_minmax(0,1fr)_84px] items-center gap-3 px-2 rounded-md hover:bg-accent/40",
+                "grid h-12 grid-cols-[34px_minmax(130px,0.8fr)_minmax(120px,0.7fr)_minmax(0,1.2fr)_84px] items-center gap-3 px-2 rounded-md hover:bg-accent/40",
               view === "list" && selected && "bg-primary/[0.08] hover:bg-primary/[0.12]",
               view === "grid" && "p-1.5 hover:bg-accent/25",
               view === "grid" && selected && "bg-primary/[0.05]",
@@ -248,9 +249,26 @@ function AssetCardComponent({
             <span className="font-mono uppercase">{asset.extension || asset.assetType}</span>
             {asset.mapRole && <><span>·</span><span className="truncate capitalize">{asset.mapRole.replaceAll("_", " ")}</span></>}
             {asset.resolution && <><span>·</span><span>{asset.resolution}</span></>}
+            {!asset.resolution && asset.width && asset.height && <><span>·</span><span>{asset.width}×{asset.height}</span></>}
+            {asset.triangles != null && asset.triangles > 0 && <><span>·</span><span>{formatTriangles(asset.triangles)}</span></>}
           </span>
         )}
       </span>
+
+      {view === "list" && (
+        <span className="min-w-0 truncate text-[11px]">
+          {specs.primary ? (
+            <span className="truncate block">
+              <span className="font-mono text-foreground/85">{specs.primary}</span>
+              {specs.secondary && (
+                <span className="text-muted-foreground/70 font-sans"> · {specs.secondary}</span>
+              )}
+            </span>
+          ) : (
+            <span className="text-muted-foreground/35 font-mono">—</span>
+          )}
+        </span>
+      )}
 
       {view === "list" && (
         <span className="min-w-0 truncate text-[11px] text-muted-foreground">

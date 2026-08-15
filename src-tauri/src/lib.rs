@@ -8,7 +8,7 @@ use std::{
     cmp::Ordering as CmpOrdering,
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{BufReader, BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -410,6 +410,8 @@ struct Asset {
     modified_at: i64,
     width: Option<i64>,
     height: Option<i64>,
+    triangles: Option<i64>,
+    vertices: Option<i64>,
     thumbnail_path: Option<String>,
     variants: Vec<AssetVariant>,
     resources: Vec<AssetResource>,
@@ -432,6 +434,8 @@ struct AssetVariant {
     usage: Option<String>,
     map_role: Option<String>,
     resolution: Option<String>,
+    triangles: Option<i64>,
+    vertices: Option<i64>,
     absolute_path: String,
     relative_path: String,
     size_bytes: i64,
@@ -448,6 +452,8 @@ struct AssetResource {
     usage: Option<String>,
     map_role: Option<String>,
     resolution: Option<String>,
+    triangles: Option<i64>,
+    vertices: Option<i64>,
     absolute_path: String,
     relative_path: String,
     size_bytes: i64,
@@ -571,6 +577,8 @@ fn initialize_database(connection: &Connection) -> Result<()> {
             modified_at INTEGER NOT NULL,
             width INTEGER,
             height INTEGER,
+            triangles INTEGER,
+            vertices INTEGER,
             thumbnail_path TEXT,
             variant_group TEXT,
             group_key TEXT,
@@ -685,6 +693,8 @@ fn initialize_database(connection: &Connection) -> Result<()> {
         ("missing_since", "TEXT"),
         ("thumbnail_version", "INTEGER NOT NULL DEFAULT 0"),
         ("content_hash", "TEXT"),
+        ("triangles", "INTEGER"),
+        ("vertices", "INTEGER"),
     ] {
         add_column_if_missing(&transaction, "assets", column, declaration)?;
     }
@@ -1610,6 +1620,126 @@ fn image_dimensions(path: &Path, asset_type: &str) -> (Option<i64>, Option<i64>)
         .unwrap_or((None, None))
 }
 
+fn parse_gltf_json(json_bytes: &[u8]) -> Option<(i64, i64)> {
+    let val: serde_json::Value = serde_json::from_slice(json_bytes).ok()?;
+    let accessors = val.get("accessors")?.as_array()?;
+    let meshes = val.get("meshes")?.as_array()?;
+    let mut total_vertices = 0i64;
+    let mut total_triangles = 0i64;
+
+    for mesh in meshes {
+        if let Some(primitives) = mesh.get("primitives").and_then(|p| p.as_array()) {
+            for prim in primitives {
+                if let Some(pos_idx) = prim
+                    .get("attributes")
+                    .and_then(|a| a.get("POSITION"))
+                    .and_then(|idx| idx.as_u64())
+                {
+                    if let Some(acc) = accessors.get(pos_idx as usize) {
+                        let vert_count = acc.get("count").and_then(|c| c.as_i64()).unwrap_or(0);
+                        total_vertices += vert_count;
+
+                        if let Some(ind_idx) = prim.get("indices").and_then(|idx| idx.as_u64()) {
+                            if let Some(ind_acc) = accessors.get(ind_idx as usize) {
+                                let ind_count =
+                                    ind_acc.get("count").and_then(|c| c.as_i64()).unwrap_or(0);
+                                let mode = prim.get("mode").and_then(|m| m.as_i64()).unwrap_or(4);
+                                match mode {
+                                    4 => total_triangles += ind_count / 3,
+                                    5 | 6 => total_triangles += (ind_count - 2).max(0),
+                                    _ => {}
+                                }
+                            }
+                        } else {
+                            let mode = prim.get("mode").and_then(|m| m.as_i64()).unwrap_or(4);
+                            match mode {
+                                4 => total_triangles += vert_count / 3,
+                                5 | 6 => total_triangles += (vert_count - 2).max(0),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if total_vertices > 0 || total_triangles > 0 {
+        Some((total_triangles, total_vertices))
+    } else {
+        None
+    }
+}
+
+fn glb_poly_count(path: &Path) -> Option<(i64, i64)> {
+    let mut file = File::open(path).ok()?;
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header).ok()?;
+    let magic = u32::from_le_bytes(header[0..4].try_into().ok()?);
+    if magic != 0x4654_6C67 {
+        return None;
+    }
+    let mut chunk_header = [0u8; 8];
+    file.read_exact(&mut chunk_header).ok()?;
+    let chunk_len = u32::from_le_bytes(chunk_header[0..4].try_into().ok()?) as usize;
+    let chunk_type = u32::from_le_bytes(chunk_header[4..8].try_into().ok()?);
+    if chunk_type != 0x4E4F_534A || chunk_len > 32 * 1024 * 1024 {
+        return None;
+    }
+    let mut json_bytes = vec![0u8; chunk_len];
+    file.read_exact(&mut json_bytes).ok()?;
+    parse_gltf_json(&json_bytes)
+}
+
+fn gltf_poly_count(path: &Path) -> Option<(i64, i64)> {
+    let file = File::open(path).ok()?;
+    if file.metadata().ok()?.len() > 32 * 1024 * 1024 {
+        return None;
+    }
+    let reader = BufReader::new(file);
+    let val: serde_json::Value = serde_json::from_reader(reader).ok()?;
+    let json_bytes = serde_json::to_vec(&val).ok()?;
+    parse_gltf_json(&json_bytes)
+}
+
+fn obj_poly_count(path: &Path) -> Option<(i64, i64)> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut vertices = 0i64;
+    let mut triangles = 0i64;
+    for line in reader.lines().flatten() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("v ") {
+            vertices += 1;
+        } else if trimmed.starts_with("f ") {
+            let count = trimmed.split_whitespace().count();
+            if count >= 4 {
+                triangles += (count as i64 - 1 - 2).max(1);
+            } else if count == 3 {
+                triangles += 1;
+            }
+        }
+    }
+    if vertices > 0 || triangles > 0 {
+        Some((triangles, vertices))
+    } else {
+        None
+    }
+}
+
+fn model_poly_count(path: &Path, extension: &str) -> (Option<i64>, Option<i64>) {
+    let result = match extension.to_ascii_lowercase().as_str() {
+        "glb" => glb_poly_count(path),
+        "gltf" => gltf_poly_count(path),
+        "obj" => obj_poly_count(path),
+        _ => None,
+    };
+    match result {
+        Some((triangles, vertices)) => (Some(triangles), Some(vertices)),
+        None => (None, None),
+    }
+}
+
 fn generate_thumbnail(source: &Path, destination: &Path) -> Option<()> {
     let file = File::open(source).ok()?;
     let reader = BufReader::new(file);
@@ -2246,6 +2376,11 @@ fn import_pack_from_path(
             .unwrap_or_else(|| "Untitled".to_string());
         let variant_group = model_variant_group(relative_path, asset_type, &extension);
         let (width, height) = image_dimensions(absolute_path, asset_type);
+        let (triangles, vertices) = if asset_type == "model" {
+            model_poly_count(absolute_path, &extension)
+        } else {
+            (None, None)
+        };
         let modified_at = modified_timestamp(&metadata);
         let content_hash = content_hashes.get(absolute_path).cloned();
         let mut existing: Option<(i64, i64, i64, Option<String>, i64)> = transaction
@@ -2314,8 +2449,8 @@ fn import_pack_from_path(
             r#"
             INSERT INTO assets(
                 pack_id, relative_path, absolute_path, name, extension, asset_type,
-                size_bytes, modified_at, width, height, variant_group, content_hash, generation
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                size_bytes, modified_at, width, height, triangles, vertices, variant_group, content_hash, generation
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT(pack_id, relative_path) DO UPDATE SET
                 absolute_path = excluded.absolute_path,
                 name = excluded.name,
@@ -2325,6 +2460,8 @@ fn import_pack_from_path(
                 modified_at = excluded.modified_at,
                 width = excluded.width,
                 height = excluded.height,
+                triangles = excluded.triangles,
+                vertices = excluded.vertices,
                 variant_group = excluded.variant_group,
                 content_hash = excluded.content_hash,
                 generation = excluded.generation,
@@ -2342,6 +2479,8 @@ fn import_pack_from_path(
                 modified_at,
                 width,
                 height,
+                triangles,
+                vertices,
                 variant_group,
                 content_hash,
                 generation,
@@ -2850,6 +2989,7 @@ fn query_assets_from_connection(request: AssetQuery, connection: &Connection) ->
         SELECT
             a.id, a.pack_id, p.name, a.name, a.relative_path, a.absolute_path,
             a.extension, a.asset_type, a.size_bytes, a.modified_at, a.width, a.height,
+            a.triangles, a.vertices,
             a.thumbnail_path,
             COALESCE((
                 SELECT json_group_array(json_object(
@@ -2860,6 +3000,8 @@ fn query_assets_from_connection(request: AssetQuery, connection: &Connection) ->
                     'usage', variant.usage,
                     'mapRole', variant.map_role,
                     'resolution', variant.resolution,
+                    'triangles', variant.triangles,
+                    'vertices', variant.vertices,
                     'absolutePath', variant.absolute_path,
                     'relativePath', variant.relative_path,
                     'sizeBytes', variant.size_bytes
@@ -2878,6 +3020,8 @@ fn query_assets_from_connection(request: AssetQuery, connection: &Connection) ->
                     'usage', resource.usage,
                     'mapRole', resource.map_role,
                     'resolution', resource.resolution,
+                    'triangles', resource.triangles,
+                    'vertices', resource.vertices,
                     'absolutePath', resource.absolute_path,
                     'relativePath', resource.relative_path,
                     'sizeBytes', resource.size_bytes,
@@ -2943,10 +3087,10 @@ fn query_assets_from_connection(request: AssetQuery, connection: &Connection) ->
     let mut statement = connection.prepare(&sql)?;
     let assets = statement
         .query_map(params_from_iter(values), |row| {
-            let variants: String = row.get(13)?;
-            let resources: String = row.get(14)?;
-            let tags: String = row.get(15)?;
-            let collection_ids: String = row.get(16)?;
+            let variants: String = row.get(15)?;
+            let resources: String = row.get(16)?;
+            let tags: String = row.get(17)?;
+            let collection_ids: String = row.get(18)?;
             Ok(Asset {
                 id: row.get(0)?,
                 pack_id: row.get(1)?,
@@ -2956,23 +3100,25 @@ fn query_assets_from_connection(request: AssetQuery, connection: &Connection) ->
                 absolute_path: row.get(5)?,
                 extension: row.get(6)?,
                 asset_type: row.get(7)?,
-                file_type: row.get(17)?,
-                usage: row.get(18)?,
-                map_role: row.get(19)?,
-                resolution: row.get(20)?,
-                classification_confidence: row.get(21)?,
-                classification_basis: row.get(22)?,
-                missing: row.get(23)?,
-                manual_classification: row.get(24)?,
-                content_hash: row.get(25)?,
-                duplicate_count: row.get(26)?,
-                duplicate_locations: serde_json::from_str(&row.get::<_, String>(27)?)
+                file_type: row.get(19)?,
+                usage: row.get(20)?,
+                map_role: row.get(21)?,
+                resolution: row.get(22)?,
+                classification_confidence: row.get(23)?,
+                classification_basis: row.get(24)?,
+                missing: row.get(25)?,
+                manual_classification: row.get(26)?,
+                content_hash: row.get(27)?,
+                duplicate_count: row.get(28)?,
+                duplicate_locations: serde_json::from_str(&row.get::<_, String>(29)?)
                     .unwrap_or_default(),
                 size_bytes: row.get(8)?,
                 modified_at: row.get(9)?,
                 width: row.get(10)?,
                 height: row.get(11)?,
-                thumbnail_path: row.get(12)?,
+                triangles: row.get(12)?,
+                vertices: row.get(13)?,
+                thumbnail_path: row.get(14)?,
                 variants: serde_json::from_str(&variants).unwrap_or_default(),
                 resources: serde_json::from_str(&resources).unwrap_or_default(),
                 tags: tags
@@ -6316,5 +6462,39 @@ mod tests {
         let model_preview = include_str!("../../src/components/ModelPreview.tsx");
         assert!(model_preview.contains("GLTFLoader"));
         assert!(model_preview.contains("outputColorSpace = THREE.SRGBColorSpace"));
+    }
+
+    #[test]
+    fn extracts_model_poly_and_vertex_counts() {
+        let gltf_json = r#"{
+            "accessors": [
+                { "count": 24 },
+                { "count": 36 }
+            ],
+            "meshes": [
+                {
+                    "primitives": [
+                        {
+                            "attributes": { "POSITION": 0 },
+                            "indices": 1,
+                            "mode": 4
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        let counts = parse_gltf_json(gltf_json.as_bytes()).unwrap();
+        assert_eq!(counts, (12, 24));
+
+        let dir = tempfile::tempdir().unwrap();
+        let obj_path = dir.path().join("cube.obj");
+        fs::write(
+            &obj_path,
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3\nf 1 3 4\n",
+        )
+        .unwrap();
+        let (triangles, vertices) = model_poly_count(&obj_path, "obj");
+        assert_eq!(triangles, Some(2));
+        assert_eq!(vertices, Some(4));
     }
 }
