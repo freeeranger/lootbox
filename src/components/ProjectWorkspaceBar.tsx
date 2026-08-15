@@ -1,4 +1,4 @@
-import { Activity, FolderOpen, Gamepad2, History, RefreshCw, TriangleAlert } from "lucide-react";
+import { Activity, FolderOpen, Gamepad2, History, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useState } from "react";
@@ -14,16 +14,20 @@ export function ProjectWorkspaceBar({
   project,
   status,
   loading,
+  isProjectView,
   onOpen,
   onRefresh,
   onViewAssets,
+  onClearTarget,
 }: {
   project: ProjectSummary;
   status?: ProjectStatus | null;
   loading: boolean;
+  isProjectView: boolean;
   onOpen: () => void;
   onRefresh: () => void;
   onViewAssets: () => void;
+  onClearTarget?: () => void;
 }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const attention = status
@@ -32,17 +36,110 @@ export function ProjectWorkspaceBar({
 
   return (
     <>
-      <div className="flex min-h-10 shrink-0 items-center gap-3 border-b bg-sidebar/45 px-4 text-xs">
-        <Gamepad2 className="size-3.5 text-primary" />
-        <button type="button" className="min-w-0 truncate font-medium hover:text-primary" onClick={onViewAssets} title={project.rootPath}>{project.name}</button>
-        <span className="truncate font-mono text-xs text-muted-foreground">{status?.destination ?? "res://assets/lootbox"}</span>
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-muted-foreground">
-          {loading ? <RefreshCw className="size-3 animate-spin" /> : !project.available || !status || attention > 0 ? <TriangleAlert className="size-3 text-destructive" /> : <Activity className="size-3 text-primary" />}
-          {loading ? "Checking…" : !project.available ? "Project unavailable" : !status ? "Status unavailable" : attention > 0 ? `${attention.toLocaleString()} need attention` : `${status.upToDateFiles.toLocaleString()} current`}
-        </span>
-        <Button type="button" variant="ghost" size="icon-xs" onClick={() => setHistoryOpen(true)} aria-label="Export history" title="Export history"><History /></Button>
-        <Button type="button" variant="ghost" size="icon-xs" onClick={onRefresh} aria-label="Refresh project status" title="Refresh project status"><RefreshCw /></Button>
-        <Button type="button" variant="ghost" size="icon-xs" onClick={onOpen} aria-label="Open project folder" title="Open project folder"><FolderOpen /></Button>
+      <div className="flex min-h-9 shrink-0 items-center justify-between gap-3 border-b bg-sidebar/50 px-4 text-xs backdrop-blur-sm">
+        <div className="flex min-w-0 items-center gap-2">
+          <Gamepad2 className="size-3.5 shrink-0 text-primary" />
+          {isProjectView ? (
+            <span className="truncate font-mono text-[11px] text-muted-foreground" title={project.rootPath}>
+              {status?.destination ?? "res://assets/lootbox"}
+            </span>
+          ) : (
+            <div className="flex min-w-0 items-center gap-1.5 truncate">
+              <span className="text-[11px] text-muted-foreground">Export target:</span>
+              <button
+                type="button"
+                className="truncate font-medium text-foreground hover:text-primary transition-colors cursor-pointer"
+                onClick={onViewAssets}
+                title={`View ${project.name} assets (${project.rootPath})`}
+              >
+                {project.name}
+              </button>
+              <span className="hidden font-mono text-[11px] text-muted-foreground md:inline">
+                ({status?.destination ?? "res://assets/lootbox"})
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          <span className="flex items-center gap-1 text-[11px] text-muted-foreground mr-1.5">
+            {loading ? (
+              <RefreshCw className="size-3 animate-spin" />
+            ) : !project.available || !status || attention > 0 ? (
+              <TriangleAlert className="size-3 text-destructive" />
+            ) : (
+              <Activity className="size-3 text-primary" />
+            )}
+            {loading
+              ? "Checking…"
+              : !project.available
+              ? "Unavailable"
+              : !status
+              ? "Status unknown"
+              : attention > 0
+              ? `${attention.toLocaleString()} need attention`
+              : `${status.upToDateFiles.toLocaleString()} current`}
+          </span>
+
+          {!isProjectView && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              className="h-6 rounded px-2 text-[11px] text-primary hover:text-primary mr-1"
+              onClick={onViewAssets}
+            >
+              View project assets
+            </Button>
+          )}
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="size-6 text-muted-foreground"
+            onClick={() => setHistoryOpen(true)}
+            aria-label="Export history"
+            title="Export history"
+          >
+            <History className="size-3.5" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="size-6 text-muted-foreground"
+            onClick={onRefresh}
+            aria-label="Refresh project status"
+            title="Refresh project status"
+          >
+            <RefreshCw className="size-3.5" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="size-6 text-muted-foreground"
+            onClick={onOpen}
+            aria-label="Open project folder"
+            title="Open project folder"
+          >
+            <FolderOpen className="size-3.5" />
+          </Button>
+          {onClearTarget && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="size-6 text-muted-foreground hover:text-foreground"
+              onClick={onClearTarget}
+              aria-label="Clear export target"
+              title="Clear active export target"
+            >
+              <X className="size-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
 
       <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>

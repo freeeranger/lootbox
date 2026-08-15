@@ -20,6 +20,7 @@ describe("saved views", () => {
       name: "Recent models",
       query: "",
       filters: {
+        type: "model",
         extension: "glb",
         mapRole: "",
         tag: "",

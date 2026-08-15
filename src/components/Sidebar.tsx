@@ -4,6 +4,8 @@ import {
   Bookmark,
   Box,
   Check,
+  ChevronRight,
+  ChevronsUpDown,
   Copy,
   File,
   FileArchive,
@@ -30,6 +32,15 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -126,36 +137,84 @@ interface NavItemProps {
   title?: string;
   onClick: () => void;
   warning?: boolean;
-  semantic?: "page" | "workspace";
 }
 
-function NavItem({ active, icon: Icon, label, description, count, title, onClick, warning, semantic = "page" }: NavItemProps) {
+function NavItem({ active, icon: Icon, label, description, count, title, onClick, warning }: NavItemProps) {
   return (
     <Button
       type="button"
       variant="ghost"
       size="sm"
       className={cn(
-        "relative w-full justify-start rounded-md px-2.5 text-xs font-normal text-muted-foreground",
+        "relative w-full justify-start rounded-md px-2.5 text-xs font-normal text-muted-foreground transition-colors",
         description ? "h-auto min-h-10 py-1.5" : "h-8",
-        active && "bg-sidebar-accent text-sidebar-accent-foreground",
+        active && "bg-sidebar-accent text-sidebar-accent-foreground font-medium",
       )}
       onClick={onClick}
       title={title}
-      aria-current={active && semantic === "page" ? "page" : undefined}
-      aria-pressed={semantic === "workspace" ? active : undefined}
+      aria-current={active ? "page" : undefined}
     >
-      <Icon className={cn("size-3.5", warning && "text-destructive")} />
+      <Icon className={cn("size-3.5 shrink-0", warning && "text-destructive")} />
       <span className="min-w-0 flex-1 text-left">
         <span className="block truncate">{label}</span>
-        {description && <span className="block truncate font-mono text-xs leading-4 text-muted-foreground">{description}</span>}
+        {description && <span className="block truncate font-mono text-[11px] leading-4 text-muted-foreground">{description}</span>}
       </span>
       {count !== undefined && (
-        <span className="font-mono text-xs text-muted-foreground">
+        <span className="font-mono text-xs text-muted-foreground tabular-nums">
           {count > 9999 ? "9k+" : count.toLocaleString()}
         </span>
       )}
     </Button>
+  );
+}
+
+interface SectionHeaderProps {
+  label: string;
+  count?: number;
+  collapsed?: boolean;
+  onToggle?: () => void;
+  action?: {
+    icon: typeof Plus;
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+  };
+}
+
+function SectionHeader({ label, count, collapsed, onToggle, action }: SectionHeaderProps) {
+  return (
+    <div className="mb-1 flex h-6 items-center justify-between px-2 text-[11px] font-medium text-muted-foreground select-none">
+      {onToggle ? (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex items-center gap-1 hover:text-foreground transition-colors cursor-pointer"
+        >
+          <ChevronRight className={cn("size-3 transition-transform duration-150", !collapsed && "rotate-90")} />
+          <span className="uppercase tracking-wider">{label}</span>
+          {count !== undefined && (
+            <span className="font-mono text-[11px] text-muted-foreground/80 tabular-nums">({count})</span>
+          )}
+        </button>
+      ) : (
+        <span className="uppercase tracking-wider">{label}</span>
+      )}
+
+      {action && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className="size-5 rounded-sm text-muted-foreground hover:text-foreground"
+          onClick={action.onClick}
+          aria-label={action.label}
+          title={action.label}
+          disabled={action.disabled}
+        >
+          <action.icon className="size-3" />
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -189,291 +248,409 @@ export function Sidebar({
   onShortcuts,
 }: Props) {
   const [sidebarQuery, setSidebarQuery] = useState("");
+  const [collapsedSections, setCollapsedSections] = useState<{
+    packs?: boolean;
+    collections?: boolean;
+    types?: boolean;
+    views?: boolean;
+  }>({});
+
+  const toggleSection = (key: keyof typeof collapsedSections) => {
+    setCollapsedSections((current) => ({ ...current, [key]: !current[key] }));
+  };
+
+  const activeProject = useMemo(
+    () => (activeProjectId !== null ? snapshot.projects.find((project) => project.id === activeProjectId) ?? null : null),
+    [activeProjectId, snapshot.projects],
+  );
+
   const normalizedSidebarQuery = sidebarQuery.trim().toLocaleLowerCase();
+  const isFiltering = normalizedSidebarQuery.length > 0;
+
   const filteredPacks = useMemo(() => snapshot.packs.filter((pack) =>
     !normalizedSidebarQuery || `${pack.name} ${pack.rootPath}`.toLocaleLowerCase().includes(normalizedSidebarQuery),
   ), [normalizedSidebarQuery, snapshot.packs]);
+
   const filteredCollections = useMemo(() => snapshot.collections.filter((collection) =>
     !normalizedSidebarQuery || collection.name.toLocaleLowerCase().includes(normalizedSidebarQuery),
   ), [normalizedSidebarQuery, snapshot.collections]);
+
   const filteredSavedViews = useMemo(() => savedViews.filter((view) =>
     !normalizedSidebarQuery || view.name.toLocaleLowerCase().includes(normalizedSidebarQuery),
   ), [normalizedSidebarQuery, savedViews]);
-  const showSidebarSearch = snapshot.packs.length + snapshot.collections.length + savedViews.length > 16;
+
+
+
+  const showSidebarSearch = snapshot.packs.length + snapshot.collections.length + savedViews.length > 10;
 
   return (
     <aside className="flex min-w-0 flex-col overflow-hidden border-r bg-sidebar text-sidebar-foreground">
-      <div className="shrink-0 px-3 pt-3 pb-2">
-        <div className="flex h-9 items-center gap-2.5 px-1.5">
-          <img src={lootboxIcon} alt="" className="size-6 rounded-md" />
+      {/* Brand & Workspace Switcher */}
+      <div className="shrink-0 space-y-2.5 px-3 pt-3 pb-2">
+        <div className="flex h-7 items-center gap-2 px-1">
+          <img src={lootboxIcon} alt="" className="size-5 rounded" />
           <p className="text-sm font-semibold tracking-[-0.01em]">Lootbox</p>
         </div>
 
-        <Button
-          type="button"
-          size="sm"
-          className="mt-3 h-8 w-full justify-start rounded-md px-2.5 text-xs font-medium"
-          onClick={onImport}
-        >
-          <FolderPlus className="size-3.5" />
-          Import packs
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger className="group flex w-full items-center justify-between gap-2 rounded-lg border bg-sidebar-accent/30 p-2 text-left transition-colors hover:bg-sidebar-accent hover:border-border cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-background/80 text-primary shadow-xs">
+                {activeProject ? (
+                  <Gamepad2 className="size-3.5" />
+                ) : (
+                  <Library className="size-3.5 text-muted-foreground" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-semibold leading-tight text-foreground">
+                  {activeProject ? activeProject.name : "Global Library"}
+                </p>
+                <p className="truncate font-mono text-[11px] text-muted-foreground leading-tight mt-0.5" title={activeProject ? activeProject.rootPath : undefined}>
+                  {activeProject ? activeProject.rootPath : `${snapshot.totalAssets.toLocaleString()} assets`}
+                </p>
+              </div>
+            </div>
+            <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56 p-1 text-xs">
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="px-2 py-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                Workspace
+              </DropdownMenuLabel>
+              <DropdownMenuItem
+                className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-xs"
+                onClick={() => onActivateProject(null)}
+              >
+                <Library className="size-3.5 text-muted-foreground" />
+                <span className="flex-1">Global Library</span>
+                {activeProjectId === null && <Check className="size-3.5 text-primary" />}
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="px-2 py-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                Godot Projects
+              </DropdownMenuLabel>
+              {snapshot.projects.map((project) => (
+                <DropdownMenuItem
+                  key={project.id}
+                  className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-xs"
+                  onClick={() => onActivateProject(project)}
+                >
+                  <Gamepad2 className={cn("size-3.5 shrink-0", !project.available && "text-destructive", project.available && "text-primary")} />
+                  <span className="flex-1 truncate">{project.name}</span>
+                  {activeProjectId === project.id && <Check className="size-3.5 shrink-0 text-primary" />}
+                </DropdownMenuItem>
+              ))}
+              {snapshot.projects.length === 0 && (
+                <p className="px-2 py-1 text-[11px] text-muted-foreground">No projects added yet.</p>
+              )}
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-xs text-muted-foreground hover:text-foreground"
+              onClick={onAddProject}
+            >
+              <Plus className="size-3.5" />
+              <span>Add Godot project…</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
         {showSidebarSearch && (
-          <div className="relative mt-2">
+          <div className="relative">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3 -translate-y-1/2 text-muted-foreground" />
-            <Input value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} className="h-8 bg-muted/15 pr-2 pl-7 text-xs" placeholder="Filter sidebar" aria-label="Filter packs, collections, and saved views" />
+            <Input
+              value={sidebarQuery}
+              onChange={(event) => setSidebarQuery(event.target.value)}
+              className="h-7 bg-muted/15 pr-2 pl-7 text-xs"
+              placeholder="Filter sidebar"
+              aria-label="Filter packs, collections, and saved views"
+            />
           </div>
         )}
       </div>
 
-      <nav className="quiet-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto px-2.5 py-3" aria-label="Asset library">
-        <section>
-          <h2 className="mb-1 px-2 text-[11px] font-medium text-muted-foreground">Workspace</h2>
-          <div className="space-y-0.5">
-            <NavItem
-              active={activeProjectId === null}
-              icon={Library}
-              label="Library mode"
-              description="No project target"
-              count={snapshot.totalAssets}
-              semantic="workspace"
-              onClick={() => onActivateProject(null)}
-            />
-            {snapshot.projects.map((project) => (
-              <ContextMenu key={project.id}>
+      {/* Main Navigation Scroll Area */}
+      <nav className="quiet-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto px-2.5 py-2" aria-label="Asset library">
+        {/* Project View (if active) or Global Catalog View */}
+        {activeProject ? (
+          <section>
+            <SectionHeader label="Project" />
+            <div className="space-y-0.5">
+              <ContextMenu>
                 <ContextMenuTrigger className="contents">
                   <NavItem
-                    active={activeProjectId === project.id}
-                    icon={project.available ? Gamepad2 : FolderCog}
-                    label={project.name}
-                    description={project.rootPath}
-                    count={project.assetCount}
-                    title={project.available ? `Work in ${project.name}` : `Missing · ${project.rootPath}`}
-                    warning={!project.available}
-                    semantic="workspace"
-                    onClick={() => onActivateProject(project)}
+                    active={isSelected(selection, { kind: "project", projectId: activeProject.id })}
+                    icon={activeProject.available ? Gamepad2 : FolderCog}
+                    label="Project assets"
+                    description={activeProject.rootPath}
+                    count={activeProject.assetCount}
+                    warning={!activeProject.available}
+                    onClick={() => onSelect({ kind: "project", projectId: activeProject.id })}
                   />
                 </ContextMenuTrigger>
                 <ContextMenuContent>
-                  {project.available ? (
+                  {activeProject.available ? (
                     <>
-                      <ContextMenuItem onClick={() => onActivateProject(project)}>
-                        <Check /> Work in this project
-                      </ContextMenuItem>
-                      <ContextMenuItem onClick={() => onOpenProject(project)}>
+                      <ContextMenuItem onClick={() => onOpenProject(activeProject)}>
                         <FolderOpen /> Open project folder
                       </ContextMenuItem>
                     </>
                   ) : (
-                    <ContextMenuItem onClick={() => onRelocateProject(project)}>
+                    <ContextMenuItem onClick={() => onRelocateProject(activeProject)}>
                       <FolderCog /> Fix project location
                     </ContextMenuItem>
                   )}
                   <ContextMenuSeparator />
-                  <ContextMenuItem variant="destructive" onClick={() => onForgetProject(project)}>
+                  <ContextMenuItem variant="destructive" onClick={() => onForgetProject(activeProject)}>
                     <Trash2 /> Disconnect project…
                   </ContextMenuItem>
                 </ContextMenuContent>
               </ContextMenu>
-            ))}
-            <button type="button" className="w-full rounded-md px-2 py-2 text-left text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground" onClick={onAddProject}>
-              <span className="flex items-center gap-2"><Plus className="size-3.5" /> Add Godot project…</span>
-            </button>
-          </div>
-        </section>
-
-        <section>
-          <h2 className="mb-1 px-2 text-[11px] font-medium text-muted-foreground">Library</h2>
-          <div className="space-y-0.5">
-            <NavItem
-              active={isSelected(selection, { kind: "all" })}
-              icon={Library}
-              label="All assets"
-              count={snapshot.totalAssets}
-              onClick={() => onSelect({ kind: "all" })}
-            />
-            <NavItem
-              active={isSelected(selection, { kind: "health" })}
-              icon={HeartPulse}
-              label="Library health"
-              count={snapshot.missingAssets + snapshot.removedAssets + snapshot.packs.filter((pack) => !pack.available).length + snapshot.projects.filter((project) => !project.available).length + activeProjectAttention}
-              warning={snapshot.missingAssets > 0 || snapshot.packs.some((pack) => !pack.available) || snapshot.projects.some((project) => !project.available) || activeProjectAttention > 0}
-              onClick={() => onSelect({ kind: "health" })}
-            />
-            {activeProjectId !== null && (
               <NavItem
-                active={isSelected(selection, { kind: "project", projectId: activeProjectId })}
-                icon={Gamepad2}
-                label="Project assets"
-                count={snapshot.projects.find((project) => project.id === activeProjectId)?.assetCount ?? 0}
-                onClick={() => onSelect({ kind: "project", projectId: activeProjectId })}
+                active={isSelected(selection, { kind: "health" })}
+                icon={HeartPulse}
+                label="Project sync & health"
+                count={activeProjectAttention}
+                warning={activeProjectAttention > 0 || !activeProject.available}
+                onClick={() => onSelect({ kind: "health" })}
               />
-            )}
-            <NavItem
-              active={isSelected(selection, { kind: "duplicates" })}
-              icon={Copy}
-              label="Duplicates"
-              count={snapshot.duplicateAssets}
-              title={snapshot.hashingAssets ? "Checking file contents…" : undefined}
-              onClick={() => onSelect({ kind: "duplicates" })}
-            />
-            {snapshot.typeCounts.map(({ assetType, count }) => {
-              const item = typeMetadata[assetType];
-              const candidate: LibrarySelection = { kind: "type", assetType };
-              return (
-                <NavItem
-                  key={assetType}
-                  active={isSelected(selection, candidate)}
-                  icon={item.icon}
-                  label={item.label}
-                  count={count}
-                  onClick={() => onSelect(candidate)}
-                />
-              );
-            })}
-          </div>
-        </section>
-
-        <section>
-          <h2 className="mb-1 px-2 text-[11px] font-medium text-muted-foreground">Packs</h2>
-          <div className="space-y-0.5">
-            {filteredPacks.map((pack) => {
-              const candidate: LibrarySelection = { kind: "pack", packId: pack.id };
-              return (
-                <ContextMenu key={pack.id}>
-                  <ContextMenuTrigger className="contents">
-                    <NavItem
-                      active={isSelected(selection, candidate)}
-                      icon={pack.available ? Folder : FolderCog}
-                      label={pack.name}
-                      count={pack.assetCount}
-                      title={pack.available ? pack.rootPath : `Missing · ${pack.rootPath}`}
-                      warning={!pack.available}
-                      onClick={() => onSelect(candidate)}
-                    />
-                  </ContextMenuTrigger>
-                  <ContextMenuContent>
-                    {pack.available ? (
-                      <>
-                        <ContextMenuItem onClick={() => onOpenPack(pack)}>
-                          <FolderOpen /> Open folder
-                        </ContextMenuItem>
-                        <ContextMenuItem onClick={() => onRescanPack(pack)}>
-                          <RefreshCw /> Rescan
-                        </ContextMenuItem>
-                      </>
-                    ) : (
-                      <ContextMenuItem onClick={() => onRelocatePack(pack)}>
-                        <FolderCog /> Fix location
-                      </ContextMenuItem>
-                    )}
-                    <ContextMenuItem onClick={() => onRenamePack(pack)}>
-                      <Pencil /> Rename
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                      disabled={pack.removedAssetCount === 0}
-                      onClick={() => onViewRemoved(pack)}
-                    >
-                      <ArchiveRestore /> Removed items
-                      {pack.removedAssetCount > 0 && (
-                        <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                          {pack.removedAssetCount}
-                        </span>
-                      )}
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                      disabled={pack.missingAssetCount === 0}
-                      onClick={() => onViewMissing(pack)}
-                    >
-                      <FolderCog /> Missing items
-                      {pack.missingAssetCount > 0 && (
-                        <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                          {pack.missingAssetCount}
-                        </span>
-                      )}
-                    </ContextMenuItem>
-                    {pack.missingAssetCount > 0 && activeProjectId === null && (
-                      <ContextMenuItem variant="destructive" onClick={() => onPurgeMissing(pack)}>
-                        <Trash2 /> Purge missing records
-                      </ContextMenuItem>
-                    )}
-                    {activeProjectId === null && (
-                      <>
-                        <ContextMenuSeparator />
-                        <ContextMenuItem variant="destructive" onClick={() => onForgetPack(pack)}>
-                          <Trash2 /> Forget pack
-                        </ContextMenuItem>
-                      </>
-                    )}
-                  </ContextMenuContent>
-                </ContextMenu>
-              );
-            })}
-          </div>
-        </section>
-
-        {savedViews.length > 0 && (
+            </div>
+          </section>
+        ) : (
           <section>
-            <h2 className="mb-1 px-2 text-[11px] font-medium text-muted-foreground">Saved views</h2>
+            <SectionHeader label="Catalog" />
             <div className="space-y-0.5">
-              {filteredSavedViews.map((view) => (
-                <ContextMenu key={view.id}>
-                  <ContextMenuTrigger className="contents">
-                    <NavItem active={activeSavedViewId === view.id} icon={Bookmark} label={view.name} onClick={() => onOpenSavedView(view)} />
-                  </ContextMenuTrigger>
-                  <ContextMenuContent>
-                    <ContextMenuItem onClick={() => onOpenSavedView(view)}><Bookmark /> Open saved view</ContextMenuItem>
-                    <ContextMenuSeparator />
-                    <ContextMenuItem variant="destructive" onClick={() => onDeleteSavedView(view)}><Trash2 /> Delete saved view</ContextMenuItem>
-                  </ContextMenuContent>
-                </ContextMenu>
-              ))}
+              <NavItem
+                active={isSelected(selection, { kind: "all" })}
+                icon={Library}
+                label="All assets"
+                count={snapshot.totalAssets}
+                onClick={() => onSelect({ kind: "all" })}
+              />
+              <NavItem
+                active={isSelected(selection, { kind: "health" })}
+                icon={HeartPulse}
+                label="Library health"
+                count={snapshot.missingAssets + snapshot.removedAssets + snapshot.packs.filter((pack) => !pack.available).length + snapshot.projects.filter((project) => !project.available).length}
+                warning={snapshot.missingAssets > 0 || snapshot.packs.some((pack) => !pack.available) || snapshot.projects.some((project) => !project.available)}
+                onClick={() => onSelect({ kind: "health" })}
+              />
+              <NavItem
+                active={isSelected(selection, { kind: "duplicates" })}
+                icon={Copy}
+                label="Duplicates"
+                count={snapshot.duplicateAssets}
+                title={snapshot.hashingAssets ? "Checking file contents…" : undefined}
+                onClick={() => onSelect({ kind: "duplicates" })}
+              />
             </div>
           </section>
         )}
 
+        {/* Global Library browsing option when inside project */}
+        {activeProject && (
+          <section>
+            <SectionHeader label="Library" />
+            <div className="space-y-0.5">
+              <NavItem
+                active={isSelected(selection, { kind: "all" })}
+                icon={Library}
+                label="All library assets"
+                count={snapshot.totalAssets}
+                onClick={() => onSelect({ kind: "all" })}
+              />
+            </div>
+          </section>
+        )}
+
+        {/* Packs Group */}
         <section>
-          <div className="mb-1 flex h-6 items-center justify-between px-2">
-            <h2 className="text-[11px] font-medium text-muted-foreground">Collections</h2>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              className="rounded-sm text-muted-foreground"
-              onClick={onStartCollection}
-              aria-label="New collection"
-              title="New collection"
-              disabled={creatingCollection}
-            >
-              <Plus className="size-3" />
-            </Button>
-          </div>
-          <div className="space-y-0.5">
-            {filteredCollections.map((collection) => {
-              const candidate: LibrarySelection = {
-                kind: "collection",
-                collectionId: collection.id,
-              };
-              return (
-                <NavItem
-                  key={collection.id}
-                  active={isSelected(selection, candidate)}
-                  icon={Archive}
-                  label={collection.name}
-                  count={collection.assetCount}
-                  onClick={() => onSelect(candidate)}
-                />
-              );
-            })}
-            {snapshot.collections.length === 0 && snapshot.totalAssets > 0 && (
-              <button type="button" className="w-full rounded-md px-2 py-2 text-left text-[11px] text-muted-foreground hover:bg-sidebar-accent hover:text-foreground" onClick={onStartCollection}>
-                Create a collection…
-              </button>
-            )}
-          </div>
+          <SectionHeader
+            label="Packs"
+            count={snapshot.packs.length}
+            collapsed={!isFiltering && collapsedSections.packs}
+            onToggle={() => toggleSection("packs")}
+            action={{
+              icon: FolderPlus,
+              label: "Import packs",
+              onClick: onImport,
+            }}
+          />
+          {(!collapsedSections.packs || isFiltering) && (
+            <div className="space-y-0.5">
+              {filteredPacks.map((pack) => {
+                const candidate: LibrarySelection = { kind: "pack", packId: pack.id };
+                return (
+                  <ContextMenu key={pack.id}>
+                    <ContextMenuTrigger className="contents">
+                      <NavItem
+                        active={isSelected(selection, candidate)}
+                        icon={pack.available ? Folder : FolderCog}
+                        label={pack.name}
+                        count={pack.assetCount}
+                        title={pack.available ? pack.rootPath : `Missing · ${pack.rootPath}`}
+                        warning={!pack.available}
+                        onClick={() => onSelect(candidate)}
+                      />
+                    </ContextMenuTrigger>
+                    <ContextMenuContent>
+                      {pack.available ? (
+                        <>
+                          <ContextMenuItem onClick={() => onOpenPack(pack)}>
+                            <FolderOpen /> Open folder
+                          </ContextMenuItem>
+                          <ContextMenuItem onClick={() => onRescanPack(pack)}>
+                            <RefreshCw /> Rescan
+                          </ContextMenuItem>
+                        </>
+                      ) : (
+                        <ContextMenuItem onClick={() => onRelocatePack(pack)}>
+                          <FolderCog /> Fix location
+                        </ContextMenuItem>
+                      )}
+                      <ContextMenuItem onClick={() => onRenamePack(pack)}>
+                        <Pencil /> Rename
+                      </ContextMenuItem>
+                      <ContextMenuItem
+                        disabled={pack.removedAssetCount === 0}
+                        onClick={() => onViewRemoved(pack)}
+                      >
+                        <ArchiveRestore /> Removed items
+                        {pack.removedAssetCount > 0 && (
+                          <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                            {pack.removedAssetCount}
+                          </span>
+                        )}
+                      </ContextMenuItem>
+                      <ContextMenuItem
+                        disabled={pack.missingAssetCount === 0}
+                        onClick={() => onViewMissing(pack)}
+                      >
+                        <FolderCog /> Missing items
+                        {pack.missingAssetCount > 0 && (
+                          <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                            {pack.missingAssetCount}
+                          </span>
+                        )}
+                      </ContextMenuItem>
+                      {pack.missingAssetCount > 0 && activeProjectId === null && (
+                        <ContextMenuItem variant="destructive" onClick={() => onPurgeMissing(pack)}>
+                          <Trash2 /> Purge missing records
+                        </ContextMenuItem>
+                      )}
+                      {activeProjectId === null && (
+                        <>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem variant="destructive" onClick={() => onForgetPack(pack)}>
+                            <Trash2 /> Forget pack
+                          </ContextMenuItem>
+                        </>
+                      )}
+                    </ContextMenuContent>
+                  </ContextMenu>
+                );
+              })}
+              {snapshot.packs.length === 0 && (
+                <button
+                  type="button"
+                  className="w-full rounded-md px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-sidebar-accent hover:text-foreground transition-colors cursor-pointer"
+                  onClick={onImport}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <FolderPlus className="size-3.5" />
+                    Import asset packs…
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
         </section>
+
+        {/* Collections Group */}
+        <section>
+          <SectionHeader
+            label="Collections"
+            count={snapshot.collections.length}
+            collapsed={!isFiltering && collapsedSections.collections}
+            onToggle={() => toggleSection("collections")}
+            action={{
+              icon: Plus,
+              label: "New collection",
+              onClick: onStartCollection,
+              disabled: creatingCollection,
+            }}
+          />
+          {(!collapsedSections.collections || isFiltering) && (
+            <div className="space-y-0.5">
+              {filteredCollections.map((collection) => {
+                const candidate: LibrarySelection = {
+                  kind: "collection",
+                  collectionId: collection.id,
+                };
+                return (
+                  <NavItem
+                    key={collection.id}
+                    active={isSelected(selection, candidate)}
+                    icon={Archive}
+                    label={collection.name}
+                    count={collection.assetCount}
+                    onClick={() => onSelect(candidate)}
+                  />
+                );
+              })}
+              {snapshot.collections.length === 0 && (
+                <button
+                  type="button"
+                  className="w-full rounded-md px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-sidebar-accent hover:text-foreground transition-colors cursor-pointer"
+                  onClick={onStartCollection}
+                  disabled={creatingCollection}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Plus className="size-3.5" />
+                    Create a collection…
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
+        </section>
+
+
+
+        {/* Saved Views (if any exist) */}
+        {savedViews.length > 0 && (
+          <section>
+            <SectionHeader
+              label="Saved Views"
+              count={savedViews.length}
+              collapsed={!isFiltering && collapsedSections.views}
+              onToggle={() => toggleSection("views")}
+            />
+            {(!collapsedSections.views || isFiltering) && (
+              <div className="space-y-0.5">
+                {filteredSavedViews.map((view) => (
+                  <ContextMenu key={view.id}>
+                    <ContextMenuTrigger className="contents">
+                      <NavItem active={activeSavedViewId === view.id} icon={Bookmark} label={view.name} onClick={() => onOpenSavedView(view)} />
+                    </ContextMenuTrigger>
+                    <ContextMenuContent>
+                      <ContextMenuItem onClick={() => onOpenSavedView(view)}><Bookmark /> Open saved view</ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem variant="destructive" onClick={() => onDeleteSavedView(view)}><Trash2 /> Delete saved view</ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
       </nav>
 
+      {/* Footer */}
       <footer className="flex shrink-0 items-center gap-1 border-t px-2.5 py-2">
         <Button type="button" variant="ghost" size="sm" className="h-8 flex-1 justify-start rounded-md px-2 text-xs font-normal text-muted-foreground" onClick={onSettings}>
           <Settings className="size-3.5" /> Maintenance

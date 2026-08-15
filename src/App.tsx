@@ -9,27 +9,36 @@ import {
   ArchiveRestore,
   ArrowUpDown,
   BookmarkPlus,
+  Box,
   Check,
   Copy,
   DatabaseBackup,
   ExternalLink,
+  File,
+  FileArchive,
+  FileCode2,
   FolderCog,
   FolderMinus,
   FolderOpen,
   FolderPlus,
   Gamepad2,
   HardDrive,
+  Image,
+  Layers3,
   SlidersHorizontal,
   Grid2X2,
   List,
   LoaderCircle,
   MoreHorizontal,
+  Music2,
   Pencil,
   Plus,
   RefreshCw,
   Search,
   SearchX,
   Trash2,
+  Type,
+  Video,
   X,
 } from "lucide-react";
 import { api } from "./api";
@@ -118,7 +127,7 @@ const emptyFilterOptions: FilterOptions = { extensions: [], mapRoles: [], tags: 
 const assetPageSize = 160;
 const searchDebounceMs = 300;
 const guardedBulkEditThreshold = 10;
-const clearedFilters: SavedViewFilters = { extension: "", mapRole: "", tag: "", minWidth: "", minConfidence: "", status: "", projectUsage: "" };
+const clearedFilters: SavedViewFilters = { type: "", extension: "", mapRole: "", tag: "", minWidth: "", minConfidence: "", status: "", projectUsage: "" };
 type AssetFilters = SavedViewFilters;
 
 const typeLabels: Record<AssetType, string> = {
@@ -132,6 +141,19 @@ const typeLabels: Record<AssetType, string> = {
   material: "Materials",
   archive: "Archives",
   other: "Other",
+};
+
+const typeMetadata: Record<AssetType, { label: string; icon: typeof Image }> = {
+  image: { label: "Images", icon: Image },
+  texture: { label: "Textures", icon: Image },
+  model: { label: "Models", icon: Box },
+  audio: { label: "Audio", icon: Music2 },
+  video: { label: "Video", icon: Video },
+  font: { label: "Fonts", icon: Type },
+  shader: { label: "Shaders", icon: FileCode2 },
+  material: { label: "Materials", icon: Layers3 },
+  archive: { label: "Archives", icon: FileArchive },
+  other: { label: "Other", icon: File },
 };
 
 const sortLabels: Record<AssetSort, string> = {
@@ -389,6 +411,7 @@ function App() {
   const query = useMemo<AssetQuery>(() => {
     const next: AssetQuery = { query: debouncedSearch, sort, sortDirection };
     if (selection.kind === "type") next.assetType = selection.assetType;
+    if (filters.type) next.assetType = filters.type as AssetType;
     if (selection.kind === "pack") next.packId = selection.packId;
     if (selection.kind === "removed") {
       if (selection.packId !== undefined) next.packId = selection.packId;
@@ -571,6 +594,7 @@ function App() {
   );
   const activeFilters = useMemo(() => {
     const labels: Record<keyof typeof filters, (value: string) => string> = {
+      type: (value) => `Type: ${typeLabels[value as AssetType] ?? value}`,
       extension: (value) => `Format .${value}`,
       mapRole: (value) => `Map ${value.replaceAll("_", " ")}`,
       tag: (value) => `Tag ${value}`,
@@ -580,7 +604,7 @@ function App() {
       projectUsage: (value) => value === "active" ? `In ${activeProject?.name ?? "active project"}` : "Not used by projects",
     };
     return (Object.entries(filters) as Array<[keyof typeof filters, string]>)
-      .filter(([, value]) => Boolean(value))
+      .filter(([key, value]) => Boolean(value) && key !== "type")
       .map(([key, value]) => ({ key, label: labels[key](value) }));
   }, [activeProject?.name, filters]);
 
@@ -1907,6 +1931,7 @@ function App() {
             project={activeProject}
             status={projectStatusQuery.data}
             loading={projectStatusQuery.isFetching}
+            isProjectView={selection.kind === "project" && selection.projectId === activeProject.id}
             onOpen={() => void api.openAsset(activeProject.rootPath).catch((caught) => reportError(caught, "open-project"))}
             onRefresh={() => void projectStatusQuery.refetch()}
             onViewAssets={() => {
@@ -1914,7 +1939,60 @@ function App() {
               setActiveSavedViewId(null);
               clearAssetSelection();
             }}
+            onClearTarget={() => activateProject(null)}
           />
+        )}
+
+        {selection.kind !== "health" && (
+          <div className="quiet-scrollbar flex h-9 shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-muted/10 px-4 text-xs select-none" aria-label="Asset type quick filters">
+            <button
+              type="button"
+              onClick={() => {
+                setFilters((current) => ({ ...current, type: "" }));
+                setActiveSavedViewId(null);
+              }}
+              className={cn(
+                "flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium transition-colors cursor-pointer",
+                !filters.type
+                  ? "bg-primary text-primary-foreground shadow-xs font-semibold"
+                  : "bg-background/80 text-muted-foreground border border-border/60 hover:bg-accent hover:text-foreground",
+              )}
+            >
+              <span>All types</span>
+              <span className={cn("font-mono text-[11px] tabular-nums", !filters.type ? "text-primary-foreground/85" : "text-muted-foreground")}>
+                {snapshot.totalAssets > 9999 ? "9k+" : snapshot.totalAssets.toLocaleString()}
+              </span>
+            </button>
+
+            {snapshot.typeCounts.map(({ assetType, count }) => {
+              const item = typeMetadata[assetType];
+              const Icon = item.icon;
+              const isActive = filters.type === assetType;
+              if (count === 0 && !isActive) return null;
+              return (
+                <button
+                  key={assetType}
+                  type="button"
+                  onClick={() => {
+                    setFilters((current) => ({ ...current, type: isActive ? "" : assetType }));
+                    setActiveSavedViewId(null);
+                  }}
+                  className={cn(
+                    "flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium transition-colors cursor-pointer",
+                    isActive
+                      ? "bg-primary text-primary-foreground shadow-xs font-semibold"
+                      : "bg-background/80 text-muted-foreground border border-border/60 hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  <Icon className="size-3" />
+                  <span>{item.label}</span>
+                  <span className={cn("font-mono text-[11px] tabular-nums", isActive ? "text-primary-foreground/85" : "text-muted-foreground")}>
+                    {count > 9999 ? "9k+" : count.toLocaleString()}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         )}
 
         {selection.kind !== "health" && activeFilters.length > 0 && (
@@ -2794,6 +2872,17 @@ function App() {
             <DialogTitle className="text-sm">Filter assets</DialogTitle>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-3">
+            <FilterSelect
+              className="col-span-2"
+              label="Asset type"
+              value={filterDraft.type ?? ""}
+              placeholder="All types"
+              options={snapshot.typeCounts.map(({ assetType }) => ({
+                value: assetType,
+                label: typeLabels[assetType] ?? assetType,
+              }))}
+              onValueChange={(value) => setFilterDraft((current) => ({ ...current, type: value }))}
+            />
             <FilterSelect label="Format" value={filterDraft.extension} placeholder="All formats" options={filterOptions.extensions.map((value) => ({ value, label: `.${value}` }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, extension: value }))} />
             <FilterSelect label="Map role" value={filterDraft.mapRole} placeholder="All map roles" options={filterOptions.mapRoles.map((value) => ({ value, label: value.replaceAll("_", " ") }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, mapRole: value }))} />
             <FilterSelect label="Tag" value={filterDraft.tag} placeholder="All tags" options={filterOptions.tags.map((value) => ({ value, label: value }))} onValueChange={(value) => setFilterDraft((current) => ({ ...current, tag: value }))} />

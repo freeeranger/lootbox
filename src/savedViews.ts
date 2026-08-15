@@ -1,6 +1,7 @@
 import type { AssetSort, AssetSortDirection, AssetType, LibrarySelection } from "./types";
 
 export interface SavedViewFilters {
+  type?: string;
   extension: string;
   mapRole: string;
   tag: string;
@@ -55,11 +56,14 @@ function readSelection(value: unknown): LibrarySelection | null {
 function readFilters(value: unknown): SavedViewFilters | null {
   if (!isRecord(value)) return null;
   const stringValue = (key: keyof SavedViewFilters) => typeof value[key] === "string" ? value[key] : "";
+  const typeValue = stringValue("type");
   const status = stringValue("status");
   const projectUsage = stringValue("projectUsage");
+  if (typeValue !== "" && !assetTypes.has(typeValue as AssetType)) return null;
   if (status !== "" && status !== "missing") return null;
   if (projectUsage !== "" && projectUsage !== "active" && projectUsage !== "unused") return null;
   return {
+    type: typeValue,
     extension: stringValue("extension"),
     mapRole: stringValue("mapRole"),
     tag: stringValue("tag"),
