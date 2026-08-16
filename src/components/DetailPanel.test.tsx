@@ -70,7 +70,7 @@ describe("DetailPanel classification controls", () => {
     await user.click(screen.getByLabelText("Asset type"));
     await user.click(await screen.findByRole("option", { name: "Texture" }));
     expect(props.onClassification).toHaveBeenCalledWith("texture");
-    expect(screen.getByText("Classification & grouping")).toBeInTheDocument();
+    expect(screen.getByText("Bulk selection")).toBeInTheDocument();
     expect(screen.getByText("3 selected")).toBeInTheDocument();
   });
 
@@ -79,7 +79,6 @@ describe("DetailPanel classification controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Group selected" }));
     expect(props.onGroup).toHaveBeenCalledWith("merge");
     expect(screen.getByText(/missing from disk/)).toBeInTheDocument();
-    expect(screen.getByText(/survive rescans/)).toBeInTheDocument();
   });
 
   it("shows mixed bulk values instead of the active asset value", () => {
@@ -121,6 +120,7 @@ describe("DetailPanel classification controls", () => {
     const grouped = { ...asset, resources: [resource] };
     const props = renderPanel({ asset: grouped, selectedCount: 1, selectedAssets: [grouped] });
     const resourceButton = screen.getByRole("button", { name: "wall_normal" });
+    expect(resourceButton.querySelector("img")).toHaveAttribute("src", expect.stringContaining("wall_normal.png"));
     await user.click(resourceButton);
     expect(props.onOpenVariant).not.toHaveBeenCalled();
     expect(screen.getByText("Previewing wall_normal · .png")).toBeInTheDocument();

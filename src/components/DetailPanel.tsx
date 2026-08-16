@@ -131,6 +131,36 @@ function textureResourceRank(resource: AssetResource) {
   return [(role < 0 ? roleOrder.length : role), -resolution] as const;
 }
 
+function ResourceThumbnail({ resource }: { resource: AssetResource }) {
+  const [failed, setFailed] = useState(false);
+  const imageSource =
+    resource.thumbnailPath ??
+    (["image", "texture"].includes(resource.assetType) && browserImages.has(resource.extension)
+      ? resource.absolutePath
+      : null);
+
+  const usableSource = failed ? null : imageSource;
+
+  return (
+    <span className="checkerboard relative block aspect-square overflow-hidden border-b">
+      {usableSource ? (
+        <img
+          src={convertFileSrc(usableSource)}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="absolute inset-0 size-full object-contain"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <span className="grid size-full place-items-center text-muted-foreground">
+          <AssetTypeIcon type={resource.assetType} size={18} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 function Preview({ asset, onModelStats }: { asset: PreviewAsset; onModelStats: (stats: ModelStats) => void }) {
   const frame = "mx-4 h-[232px] overflow-hidden rounded-md border bg-muted/10";
   const [failed, setFailed] = useState(false);
@@ -343,228 +373,339 @@ function DetailPanelComponent({
 
       <div className="space-y-5 px-4 py-5 [&>section>h3]:text-[11px] [&>section>h3]:font-medium [&>section>h3]:text-foreground">
         {busy && <p className="rounded-sm border bg-muted/20 px-2 py-1.5 text-[11px] text-muted-foreground" role="status" aria-live="polite">Saving changes to {selectedCount.toLocaleString()} {selectedCount === 1 ? "asset" : "assets"}…</p>}
-        {selectedCount === 1 ? <section>
-          <h3 className="mb-2 text-[11px] font-medium">Info</h3>
-          <dl className="grid grid-cols-[76px_minmax(0,1fr)] gap-y-1.5 text-[11px]">
-            <dt className="text-muted-foreground">Category</dt>
-            <dd>{assetTypeNames[asset.assetType]}</dd>
-            {asset.missing && (
-              <>
-                <dt className="text-muted-foreground">Status</dt>
-                <dd className="text-destructive">Missing from disk</dd>
-              </>
-            )}
-            {asset.usage && (
-              <>
-                <dt className="text-muted-foreground">Source type</dt>
-                <dd>{assetTypeNames[asset.fileType]}</dd>
-              </>
-            )}
-            {asset.mapRole && (
-              <>
-                <dt className="text-muted-foreground">Map</dt>
-                <dd>{readableMapRole(asset.mapRole)}</dd>
-              </>
-            )}
-            {asset.resolution && (
-              <>
-                <dt className="text-muted-foreground">Resolution</dt>
-                <dd>{asset.resolution}</dd>
-              </>
-            )}
-            <dt className="text-muted-foreground">Format</dt>
-            <dd>{asset.extension ? `.${asset.extension}` : "—"}</dd>
-            <dt className="text-muted-foreground">Size</dt>
-            <dd>{formatBytes(asset.sizeBytes)}</dd>
-            {asset.width && asset.height && (
-              <>
-                <dt className="text-muted-foreground">Dimensions</dt>
-                <dd>{asset.width} × {asset.height}</dd>
-              </>
-            )}
-            {asset.assetType === "model" && (modelStats != null || (asset.triangles != null && asset.triangles > 0)) && (
-              <>
-                <dt className="text-muted-foreground">Triangles</dt>
-                <dd>{(modelStats?.triangles ?? asset.triangles ?? 0).toLocaleString()}</dd>
-                <dt className="text-muted-foreground">Vertices</dt>
-                <dd>{(modelStats?.vertices ?? asset.vertices ?? 0).toLocaleString()}</dd>
-              </>
-            )}
-            <dt className="text-muted-foreground">Path</dt>
-            <dd className="truncate" title={asset.relativePath}>{asset.relativePath}</dd>
-            {asset.usage && (
-              <>
-                <dt className="text-muted-foreground">Detected</dt>
-                <dd
-                  className="truncate"
-                  title={asset.classificationBasis.replaceAll(",", ", ")}
+        {selectedCount === 1 ? (
+          <section>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-[11px] font-medium">Properties</h3>
+              {asset.manualClassification && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="h-5 rounded-xs px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                  disabled={busy}
+                  onClick={() => void onResetClassification()}
                 >
-                  {asset.classificationConfidence}% confidence
-                </dd>
-              </>
-            )}
-          </dl>
+                  Reset to automatic
+                </Button>
+              )}
+            </div>
+            <dl className="grid grid-cols-[76px_minmax(0,1fr)] items-center gap-y-2 text-[11px]">
+              <dt className="text-muted-foreground">Type</dt>
+              <dd>
+                <Select
+                  items={Object.entries(assetTypeNames).map(([value, label]) => ({ value, label }))}
+                  value={selectedType}
+                  disabled={busy}
+                  onValueChange={(value) => { if (value && value !== "__mixed") void onClassification(value); }}
+                >
+                  <SelectTrigger size="sm" aria-label="Asset type" className="h-7 w-full rounded-sm bg-muted/20 text-[11px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent alignItemWithTrigger={false} align="start">
+                    <SelectGroup>
+                      {(Object.entries(assetTypeNames) as Array<[AssetType, string]>).map(([type, label]) => (
+                        <SelectItem key={type} value={type} className="text-[11px]">{label}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </dd>
 
-          {asset.variants.length > 1 && asset.assetType !== "texture" && (
-            <div className="mt-3">
-              <h3 className="mb-1.5 text-[11px] font-medium">
-                {asset.assetType === "model" ? "Formats" : "Copies"}
-              </h3>
-              <div className="flex flex-wrap gap-1">
-                {[...asset.variants]
-                  .sort((left, right) => {
-                    if (left.id === asset.id) return -1;
-                    if (right.id === asset.id) return 1;
-                    const order = ["glb", "gltf", "fbx", "obj", "dae", "blend", "mtl"];
-                    const leftRank = order.indexOf(left.extension);
-                    const rightRank = order.indexOf(right.extension);
-                    return (leftRank < 0 ? order.length : leftRank) -
-                      (rightRank < 0 ? order.length : rightRank);
-                  })
-                  .map((variant) => (
-                    <Button
-                      type="button"
-                      key={variant.id}
-                      variant={variant.absolutePath === previewAsset.absolutePath ? "secondary" : "outline"}
-                      size="xs"
-                      className="h-7 rounded-sm px-2 font-mono text-[11px] font-normal uppercase"
-                      onClick={() => setPreviewAsset({
-                        id: variant.id,
-                        name: fileName(variant.relativePath),
-                        absolutePath: variant.absolutePath,
-                        extension: variant.extension,
-                        assetType: variant.assetType,
-                      })}
-                      onDoubleClick={() => onOpenVariant(variant.absolutePath)}
-                      aria-pressed={variant.absolutePath === previewAsset.absolutePath}
-                      title={`${variant.relativePath} · ${formatBytes(variant.sizeBytes)}`}
+              {selectedType === "texture" && (
+                <>
+                  <dt className="text-muted-foreground">Map role</dt>
+                  <dd>
+                    <Select
+                      items={[
+                        { value: "__none", label: "No map role" },
+                        ...["color", "normal", "normal_gl", "normal_dx", "roughness", "metalness", "occlusion", "height", "opacity", "emissive", "specular", "glossiness"].map((value) => ({ value, label: readableMapRole(value) })),
+                      ]}
+                      value={selectedMapRole}
+                      disabled={busy}
+                      onValueChange={(value) => { if (value && value !== "__mixed") void onClassification(undefined, value); }}
                     >
-                      {asset.assetType === "model"
-                        ? variant.extension
-                        : variant.assetType === "texture"
-                          ? "Texture"
-                          : supportCopyLabel(variant.relativePath)}
-                    </Button>
-                  ))}
-              </div>
-            </div>
-          )}
+                      <SelectTrigger size="sm" aria-label="Texture map role" className="h-7 w-full rounded-sm bg-muted/20 text-[11px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent alignItemWithTrigger={false} align="start">
+                        <SelectGroup>
+                          <SelectItem value="__none" className="text-[11px]">No map role</SelectItem>
+                          {["color", "normal", "normal_gl", "normal_dx", "roughness", "metalness", "occlusion", "height", "opacity", "emissive", "specular", "glossiness"].map((role) => (
+                            <SelectItem key={role} value={role} className="text-[11px]">{readableMapRole(role)}</SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </dd>
+                </>
+              )}
 
-          {asset.duplicateLocations.length > 0 && (
-            <div className="mt-3">
-              <h3 className="mb-1.5 text-[11px] font-medium">
-                Identical copies · {asset.duplicateCount}
-              </h3>
-              <div className="space-y-1">
-                {asset.duplicateLocations.map((duplicate) => (
-                  <button
-                    type="button"
-                    key={duplicate.id}
-                    className="block w-full min-w-0 rounded-sm border px-2 py-1.5 text-left hover:bg-muted/40"
-                    onClick={() => onOpenVariant(duplicate.absolutePath)}
-                    title={collapseHomePath(duplicate.absolutePath)}
+              {asset.missing && (
+                <>
+                  <dt className="text-muted-foreground">Status</dt>
+                  <dd className="text-destructive">Missing from disk</dd>
+                </>
+              )}
+              {asset.usage && (
+                <>
+                  <dt className="text-muted-foreground">Source</dt>
+                  <dd>{assetTypeNames[asset.fileType]}</dd>
+                </>
+              )}
+              {asset.resolution && (
+                <>
+                  <dt className="text-muted-foreground">Resolution</dt>
+                  <dd>{asset.resolution}</dd>
+                </>
+              )}
+              <dt className="text-muted-foreground">Format</dt>
+              <dd>{asset.extension ? `.${asset.extension}` : "—"}</dd>
+              <dt className="text-muted-foreground">Size</dt>
+              <dd>{formatBytes(asset.sizeBytes)}</dd>
+              {asset.width && asset.height && (
+                <>
+                  <dt className="text-muted-foreground">Dimensions</dt>
+                  <dd>{asset.width} × {asset.height}</dd>
+                </>
+              )}
+              {asset.assetType === "model" && (modelStats != null || (asset.triangles != null && asset.triangles > 0)) && (
+                <>
+                  <dt className="text-muted-foreground">Triangles</dt>
+                  <dd>{(modelStats?.triangles ?? asset.triangles ?? 0).toLocaleString()}</dd>
+                  <dt className="text-muted-foreground">Vertices</dt>
+                  <dd>{(modelStats?.vertices ?? asset.vertices ?? 0).toLocaleString()}</dd>
+                </>
+              )}
+              <dt className="text-muted-foreground">Path</dt>
+              <dd className="truncate" title={asset.relativePath}>{asset.relativePath}</dd>
+              {asset.usage && (
+                <>
+                  <dt className="text-muted-foreground">Detected</dt>
+                  <dd
+                    className="truncate"
+                    title={asset.classificationBasis.replaceAll(",", ", ")}
                   >
-                    <span className="block truncate text-[11px] font-medium">{duplicate.packName}</span>
-                    <span className="block truncate text-[11px] text-muted-foreground">
-                      {duplicate.relativePath} · {formatBytes(duplicate.sizeBytes)}
-                    </span>
-                  </button>
-                ))}
+                    {asset.classificationConfidence}% confidence
+                  </dd>
+                </>
+              )}
+            </dl>
+
+            {asset.variants.length > 1 && asset.assetType !== "texture" && (
+              <div className="mt-3">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <h3 className="text-[11px] font-medium">
+                    {asset.assetType === "model" ? "Formats" : "Copies"}
+                  </h3>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    className="h-5 rounded-xs px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                    disabled={busy}
+                    onClick={() => void onGroup("split")}
+                  >
+                    Remove from group
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {[...asset.variants]
+                    .sort((left, right) => {
+                      if (left.id === asset.id) return -1;
+                      if (right.id === asset.id) return 1;
+                      const order = ["glb", "gltf", "fbx", "obj", "dae", "blend", "mtl"];
+                      const leftRank = order.indexOf(left.extension);
+                      const rightRank = order.indexOf(right.extension);
+                      return (leftRank < 0 ? order.length : leftRank) -
+                        (rightRank < 0 ? order.length : rightRank);
+                    })
+                    .map((variant) => (
+                      <Button
+                        type="button"
+                        key={variant.id}
+                        variant={variant.absolutePath === previewAsset.absolutePath ? "secondary" : "outline"}
+                        size="xs"
+                        className="h-7 rounded-sm px-2 font-mono text-[11px] font-normal uppercase"
+                        onClick={() => setPreviewAsset({
+                          id: variant.id,
+                          name: fileName(variant.relativePath),
+                          absolutePath: variant.absolutePath,
+                          extension: variant.extension,
+                          assetType: variant.assetType,
+                        })}
+                        onDoubleClick={() => onOpenVariant(variant.absolutePath)}
+                        aria-pressed={variant.absolutePath === previewAsset.absolutePath}
+                        title={`${variant.relativePath} · ${formatBytes(variant.sizeBytes)}`}
+                      >
+                        {asset.assetType === "model"
+                          ? variant.extension
+                          : variant.assetType === "texture"
+                            ? "Texture"
+                            : supportCopyLabel(variant.relativePath)}
+                      </Button>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            {asset.duplicateLocations.length > 0 && (
+              <div className="mt-3">
+                <h3 className="mb-1.5 text-[11px] font-medium">
+                  Identical copies · {asset.duplicateCount}
+                </h3>
+                <div className="space-y-1">
+                  {asset.duplicateLocations.map((duplicate) => (
+                    <button
+                      type="button"
+                      key={duplicate.id}
+                      className="block w-full min-w-0 rounded-sm border px-2 py-1.5 text-left hover:bg-muted/40"
+                      onClick={() => onOpenVariant(duplicate.absolutePath)}
+                      title={collapseHomePath(duplicate.absolutePath)}
+                    >
+                      <span className="block truncate text-[11px] font-medium">{duplicate.packName}</span>
+                      <span className="block truncate text-[11px] text-muted-foreground">
+                        {duplicate.relativePath} · {formatBytes(duplicate.sizeBytes)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        ) : (
+          <section className="space-y-3 rounded-md border bg-muted/10 p-3">
+            <div>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold text-foreground">Bulk selection</h3>
+                <span className="font-mono text-[11px] text-muted-foreground">{selectedCount.toLocaleString()} assets</span>
+              </div>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {allSelectedKnown
+                  ? `${new Set(selectedAssets.map((item) => item.assetType)).size} types across ${new Set(selectedAssets.map((item) => item.packId)).size} packs`
+                  : "Selection includes unloaded results"}
+              </p>
+              {selectedAssets.some((item) => item.missing) && (
+                <p className="mt-1 text-[11px] text-destructive">
+                  {selectedAssets.filter((item) => item.missing).length.toLocaleString()} missing from disk
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <span className="mb-1 block text-[11px] text-muted-foreground">Asset type</span>
+                <Select
+                  items={[
+                    ...(selectedType === "__mixed" ? [{ value: "__mixed", label: "Multiple values" }] : []),
+                    ...Object.entries(assetTypeNames).map(([value, label]) => ({ value, label })),
+                  ]}
+                  value={selectedType}
+                  disabled={busy}
+                  onValueChange={(value) => { if (value && value !== "__mixed") void onClassification(value); }}
+                >
+                  <SelectTrigger size="sm" aria-label="Asset type" className="w-full rounded-sm text-[11px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent alignItemWithTrigger={false} align="start">
+                    <SelectGroup>
+                      {selectedType === "__mixed" && <SelectItem value="__mixed" disabled className="text-[11px]">Multiple values</SelectItem>}
+                      {(Object.entries(assetTypeNames) as Array<[AssetType, string]>).map(([type, label]) => (
+                        <SelectItem key={type} value={type} className="text-[11px]">{label}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <span className="mb-1 block text-[11px] text-muted-foreground">Texture map</span>
+                <Select
+                  items={[
+                    ...(selectedMapRole === "__mixed" ? [{ value: "__mixed", label: "Multiple values" }] : []),
+                    { value: "__none", label: "No map role" },
+                    ...["color", "normal", "normal_gl", "normal_dx", "roughness", "metalness", "occlusion", "height", "opacity", "emissive", "specular", "glossiness"].map((value) => ({ value, label: readableMapRole(value) })),
+                  ]}
+                  value={selectedMapRole}
+                  disabled={busy || selectedType !== "texture"}
+                  onValueChange={(value) => { if (value && value !== "__mixed") void onClassification(undefined, value); }}
+                >
+                  <SelectTrigger size="sm" aria-label="Texture map role" className="w-full rounded-sm text-[11px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent alignItemWithTrigger={false} align="start">
+                    <SelectGroup>
+                      {selectedMapRole === "__mixed" && <SelectItem value="__mixed" disabled className="text-[11px]">Multiple values</SelectItem>}
+                      <SelectItem value="__none" className="text-[11px]">No map role</SelectItem>
+                      {["color", "normal", "normal_gl", "normal_dx", "roughness", "metalness", "occlusion", "height", "opacity", "emissive", "specular", "glossiness"].map((role) => (
+                        <SelectItem key={role} value={role} className="text-[11px]">{readableMapRole(role)}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
-          )}
-        </section> : <section className="rounded-md border bg-muted/10 p-3">
-          <h3 className="mb-1.5">Bulk selection</h3>
-          <p className="text-xs">Editing all {selectedCount.toLocaleString()} selected assets</p>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            {allSelectedKnown
-              ? `${new Set(selectedAssets.map((item) => item.assetType)).size} asset types · ${new Set(selectedAssets.map((item) => item.packId)).size} source packs · mixed values are labeled below`
-              : "The selection includes unloaded results; review the complete list before changing shared metadata."}
-          </p>
-          {selectedAssets.some((item) => item.missing) && <p className="mt-1 text-[11px] text-destructive">{selectedAssets.filter((item) => item.missing).length.toLocaleString()} missing from disk</p>}
-        </section>}
 
-        <Separator />
-
-        <section>
-          <h3 className="mb-2 flex items-center justify-between gap-2">
-            <span>Classification & grouping</span><span className="font-normal text-muted-foreground">{selectedCount.toLocaleString()} {selectedCount === 1 ? "asset" : "assets"}</span>
-          </h3>
-          <div className="grid grid-cols-2 gap-1.5">
-            <div>
-              <span className="mb-1 block text-[11px] text-muted-foreground">Asset type</span>
-            <Select
-              items={[
-                ...(selectedType === "__mixed" ? [{ value: "__mixed", label: "Multiple values" }] : []),
-                ...Object.entries(assetTypeNames).map(([value, label]) => ({ value, label })),
-              ]}
-              value={selectedType}
-              disabled={busy}
-              onValueChange={(value) => { if (value && value !== "__mixed") void onClassification(value); }}
-            >
-              <SelectTrigger size="sm" aria-label="Asset type" className="w-full rounded-sm text-[11px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent alignItemWithTrigger={false} align="start">
-                <SelectGroup>
-                  {selectedType === "__mixed" && <SelectItem value="__mixed" disabled className="text-[11px]">Multiple values</SelectItem>}
-                  {(Object.entries(assetTypeNames) as Array<[AssetType, string]>).map(([type, label]) => (
-                    <SelectItem key={type} value={type} className="text-[11px]">{label}</SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                className="rounded-sm"
+                disabled={busy || !canGroupSelection}
+                title={canGroupSelection ? "Group selected assets together" : "Assets from different packs cannot be grouped"}
+                onClick={() => void onGroup("merge")}
+              >
+                Group selected
+              </Button>
+              {selectedAssets.some((item) => item.variants.length > 1 || item.resources.length > 0) && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="rounded-sm text-muted-foreground hover:text-foreground"
+                  disabled={busy}
+                  onClick={() => void onGroup("split")}
+                >
+                  Remove from group
+                </Button>
+              )}
+              {selectedAssets.some((item) => item.manualClassification) && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="rounded-sm text-muted-foreground hover:text-foreground"
+                  disabled={busy}
+                  onClick={() => void onResetClassification()}
+                >
+                  Reset to automatic
+                </Button>
+              )}
             </div>
-            <div>
-              <span className="mb-1 block text-[11px] text-muted-foreground">Texture map</span>
-            <Select
-              items={[
-                ...(selectedMapRole === "__mixed" ? [{ value: "__mixed", label: "Multiple values" }] : []),
-                { value: "__none", label: "No map role" },
-                ...["color", "normal", "normal_gl", "normal_dx", "roughness", "metalness", "occlusion", "height", "opacity", "emissive", "specular", "glossiness"].map((value) => ({ value, label: readableMapRole(value) })),
-              ]}
-              value={selectedMapRole}
-              disabled={busy || selectedType !== "texture"}
-              onValueChange={(value) => { if (value && value !== "__mixed") void onClassification(undefined, value); }}
-            >
-              <SelectTrigger size="sm" aria-label="Texture map role" className="w-full rounded-sm text-[11px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent alignItemWithTrigger={false} align="start">
-                <SelectGroup>
-                  {selectedMapRole === "__mixed" && <SelectItem value="__mixed" disabled className="text-[11px]">Multiple values</SelectItem>}
-                  <SelectItem value="__none" className="text-[11px]">No map role</SelectItem>
-                  {["color", "normal", "normal_gl", "normal_dx", "roughness", "metalness", "occlusion", "height", "opacity", "emissive", "specular", "glossiness"].map((role) => (
-                    <SelectItem key={role} value={role} className="text-[11px]">{readableMapRole(role)}</SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            </div>
-          </div>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {selectedCount > 1 && (
-              <Button type="button" variant="outline" size="xs" className="rounded-sm" disabled={busy || !canGroupSelection} title={canGroupSelection ? "Group selected assets" : "Assets from different packs cannot be grouped"} onClick={() => void onGroup("merge")}>Group selected</Button>
-            )}
-            {(selectedCount > 1 || asset.variants.length > 1 || asset.resources.length > 0) && (
-              <Button type="button" variant="outline" size="xs" className="rounded-sm" disabled={busy} onClick={() => void onGroup("split")}>Remove from group</Button>
-            )}
-            {asset.manualClassification && (
-              <Button type="button" variant="ghost" size="xs" className="rounded-sm" disabled={busy} onClick={() => void onResetClassification()}>Use automatic</Button>
-            )}
-          </div>
-          <p className="mt-1.5 text-[11px] text-muted-foreground">
-            Type controls how Lootbox previews a file. Texture map describes its material role; grouping keeps related files together while browsing and exporting. Manual choices survive rescans.
-          </p>
-        </section>
+          </section>
+        )}
 
         {asset.resources.length > 0 && (
           <>
             <Separator />
             <section>
-              <h3 className="mb-2 text-[11px] font-medium">
-                {asset.assetType === "texture" ? "Maps & sizes" : "Textures"}
-              </h3>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-[11px] font-medium">
+                  {asset.assetType === "texture" ? "Maps & sizes" : "Textures"}
+                </h3>
+                {(asset.variants.length > 1 || asset.resources.length > 0) && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    className="h-5 rounded-xs px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                    disabled={busy}
+                    onClick={() => void onGroup("split")}
+                  >
+                    Remove from group
+                  </Button>
+                )}
+              </div>
               <div className="grid grid-cols-2 gap-1.5">
                 {[...asset.resources]
                   .sort((left, right) => {
@@ -592,19 +733,7 @@ function DetailPanelComponent({
                     aria-pressed={resource.absolutePath === previewAsset.absolutePath}
                     title={resource.relativePath}
                   >
-                    <span className="checkerboard relative block aspect-square overflow-hidden border-b">
-                      {resource.thumbnailPath ? (
-                        <img
-                          src={convertFileSrc(resource.thumbnailPath)}
-                          alt=""
-                          className="absolute inset-0 size-full object-contain"
-                        />
-                      ) : (
-                        <span className="grid size-full place-items-center text-muted-foreground">
-                          <AssetTypeIcon type={resource.assetType} size={18} />
-                        </span>
-                      )}
-                    </span>
+                    <ResourceThumbnail resource={resource} />
                     <span className="block truncate px-1.5 py-1 text-[11px]">
                       {asset.assetType === "texture"
                         ? textureMapLabel(resource)
