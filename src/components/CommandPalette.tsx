@@ -42,6 +42,7 @@ import type {
 import type { SavedAssetView } from "@/savedViews";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
+import { formatForDisplay } from "@tanstack/react-hotkeys";
 
 export interface CommandPaletteProps {
   open: boolean;
@@ -133,7 +134,7 @@ export function CommandPalette({
                 Export {selectedCount.toLocaleString()} {selectedCount === 1 ? "asset" : "assets"} to{" "}
                 <span className="text-foreground font-medium">{activeProject.name}</span>
               </span>
-              <CommandShortcut>⌘E</CommandShortcut>
+              <CommandShortcut>{formatForDisplay("Mod+E")}</CommandShortcut>
             </CommandItem>
           )}
 
@@ -145,7 +146,7 @@ export function CommandPalette({
             >
               <Plus className="size-4 text-muted-foreground" />
               <span>Create collection from selection ({selectedCount.toLocaleString()})</span>
-              <CommandShortcut>⌘⇧C</CommandShortcut>
+              <CommandShortcut>{formatForDisplay("Mod+Shift+C")}</CommandShortcut>
             </CommandItem>
           )}
 
@@ -157,7 +158,7 @@ export function CommandPalette({
             >
               <X className="size-4 text-muted-foreground" />
               <span>Clear selection ({selectedCount.toLocaleString()})</span>
-              <CommandShortcut>⌘⇧A</CommandShortcut>
+              <CommandShortcut>{formatForDisplay("Mod+Shift+A")}</CommandShortcut>
             </CommandItem>
           ) : (
             <CommandItem
@@ -167,7 +168,7 @@ export function CommandPalette({
             >
               <CheckSquare className="size-4 text-muted-foreground" />
               <span>Select all assets</span>
-              <CommandShortcut>⌘A</CommandShortcut>
+              <CommandShortcut>{formatForDisplay("Mod+A")}</CommandShortcut>
             </CommandItem>
           )}
 
@@ -456,7 +457,7 @@ export function CommandPalette({
           >
             <PanelLeft className="size-4 text-muted-foreground" />
             <span>{leftPanelCollapsed ? "Show sidebar" : "Hide sidebar"}</span>
-            <CommandShortcut>⌘B</CommandShortcut>
+            <CommandShortcut>{formatForDisplay("Mod+B")}</CommandShortcut>
           </CommandItem>
 
           <CommandItem
@@ -466,7 +467,7 @@ export function CommandPalette({
           >
             <PanelRight className="size-4 text-muted-foreground" />
             <span>{rightPanelCollapsed ? "Show inspector" : "Hide inspector"}</span>
-            <CommandShortcut>⌘I</CommandShortcut>
+            <CommandShortcut>{formatForDisplay("Mod+I")}</CommandShortcut>
           </CommandItem>
 
           <CommandItem

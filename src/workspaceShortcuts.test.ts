@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { formatForDisplay } from "@tanstack/react-hotkeys";
 import { assetListRowHeight, isAssetKeyboardTarget } from "./workspaceShortcuts";
 
 describe("workspace keyboard scope", () => {
@@ -41,5 +42,10 @@ describe("workspace keyboard scope", () => {
 
   it("matches the rendered list row geometry", () => {
     expect(assetListRowHeight).toBe(48);
+  });
+
+  it("formats hotkeys via tanstack for different platforms", () => {
+    expect(formatForDisplay("Mod+K", { platform: "linux" })).toBe("Ctrl+K");
+    expect(formatForDisplay("Mod+K", { platform: "mac" })).toBe("⌘ K");
   });
 });

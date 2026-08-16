@@ -3,7 +3,7 @@ import type { RefObject } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useHotkeys } from "@tanstack/react-hotkeys";
+import { formatForDisplay, useHotkeys } from "@tanstack/react-hotkeys";
 import { Kbd } from "@/components/ui/kbd";
 import {
   AlertCircle,
@@ -487,6 +487,7 @@ function App() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [reviewSelectionOpen, setReviewSelectionOpen] = useState(false);
   const [reviewSelectionLimit, setReviewSelectionLimit] = useState(250);
+  const [reviewSelectionFilter, setReviewSelectionFilter] = useState("");
   const [settingsMessage, setSettingsMessage] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const tagInputRef = useRef<HTMLInputElement>(null);
@@ -664,6 +665,24 @@ function App() {
     }),
     [selectedIds],
   );
+
+  const filteredReviewAssetIds = useMemo(() => {
+    const query = reviewSelectionFilter.trim().toLowerCase();
+    if (!query) return [...selectedIds];
+    return [...selectedIds].filter((id) => {
+      const item = assetsById.get(id) ?? selectedAssetCacheRef.current.get(id);
+      const path = item?.relativePath ?? selectedPathCacheRef.current.get(id) ?? "";
+      const name = item?.name ?? path.split(/[\\/]/).at(-1) ?? "";
+      const pack = item?.packName ?? "";
+      const type = item?.assetType ?? "";
+      return (
+        name.toLowerCase().includes(query) ||
+        path.toLowerCase().includes(query) ||
+        pack.toLowerCase().includes(query) ||
+        type.toLowerCase().includes(query)
+      );
+    });
+  }, [assetsById, selectedIds, reviewSelectionFilter]);
   const layoutLeftPanelWidth = leftPanelCollapsed ? 0 : Math.min(leftPanelWidth, windowWidth < 1100 ? 200 : 320);
   const layoutRightPanelWidth = rightPanelCollapsed ? 0 : Math.min(
     rightPanelWidth,
@@ -2176,8 +2195,8 @@ function App() {
       >
         <button
           type="button"
-          aria-label={leftPanelCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
-          title={leftPanelCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+          aria-label={leftPanelCollapsed ? `Expand sidebar (${formatForDisplay("Mod+B")})` : `Collapse sidebar (${formatForDisplay("Mod+B")})`}
+          title={leftPanelCollapsed ? `Expand sidebar (${formatForDisplay("Mod+B")})` : `Collapse sidebar (${formatForDisplay("Mod+B")})`}
           onClick={(e) => {
             e.stopPropagation();
             setLeftPanelCollapsed((c) => !c);
@@ -2265,11 +2284,11 @@ function App() {
               className="rounded-md gap-1.5 text-xs text-muted-foreground hover:text-foreground"
               onClick={() => setCommandPaletteOpen(true)}
               aria-label="Open command palette"
-              title="Command Palette (Ctrl+K)"
+              title={`Command Palette (${formatForDisplay("Mod+K")})`}
             >
               <Command className="size-3.5" />
               <span className="max-[1150px]:hidden">Commands</span>
-              <Kbd className="ml-0.5">⌘K</Kbd>
+              <Kbd className="ml-0.5">{formatForDisplay("Mod+K")}</Kbd>
             </Button>
 
             <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
@@ -2281,7 +2300,7 @@ function App() {
                     size="sm"
                     className="rounded-md"
                     aria-label={activeFilters.length > 0 || Boolean(filters.type) ? `Filter assets, ${activeFilters.length + (filters.type ? 1 : 0)} active` : "Filter assets"}
-                    title={activeFilters.length > 0 || Boolean(filters.type) ? [...(filters.type ? [`Type: ${typeLabels[filters.type as AssetType] ?? filters.type}`] : []), ...activeFilters.map((f) => f.label)].join(" · ") : "Filters (Ctrl+Shift+F)"}
+                    title={activeFilters.length > 0 || Boolean(filters.type) ? [...(filters.type ? [`Type: ${typeLabels[filters.type as AssetType] ?? filters.type}`] : []), ...activeFilters.map((f) => f.label)].join(" · ") : `Filters (${formatForDisplay("Mod+Shift+F")})`}
                   >
                     <SlidersHorizontal />
                     <span className="max-[1150px]:hidden">Filters</span>
@@ -2883,8 +2902,8 @@ function App() {
       >
         <button
           type="button"
-          aria-label={rightPanelCollapsed ? "Expand inspector (Ctrl+I)" : "Collapse inspector (Ctrl+I)"}
-          title={rightPanelCollapsed ? "Expand inspector (Ctrl+I)" : "Collapse inspector (Ctrl+I)"}
+          aria-label={rightPanelCollapsed ? `Expand inspector (${formatForDisplay("Mod+I")})` : `Collapse inspector (${formatForDisplay("Mod+I")})`}
+          title={rightPanelCollapsed ? `Expand inspector (${formatForDisplay("Mod+I")})` : `Collapse inspector (${formatForDisplay("Mod+I")})`}
           onClick={(e) => {
             e.stopPropagation();
             setRightPanelCollapsed((c) => !c);
@@ -3166,25 +3185,92 @@ function App() {
 
       <Dialog open={reviewSelectionOpen} onOpenChange={(open) => {
         setReviewSelectionOpen(open);
-        if (open) setReviewSelectionLimit(250);
+        if (open) {
+          setReviewSelectionLimit(250);
+          setReviewSelectionFilter("");
+        }
       }}>
-        <DialogContent className="gap-4 sm:max-w-lg">
+        <DialogContent className="gap-3 sm:max-w-lg">
           <DialogHeader className="gap-1">
             <DialogTitle className="text-sm">Review selection</DialogTitle>
             <DialogDescription className="text-xs">{selectionSummary}. Inspector changes apply to every item below.</DialogDescription>
           </DialogHeader>
+
+          {/* Instant filter and bulk remove matching */}
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={reviewSelectionFilter}
+                onChange={(e) => {
+                  setReviewSelectionFilter(e.target.value);
+                  setReviewSelectionLimit(250);
+                }}
+                placeholder="Filter by name, path, pack, or type..."
+                className="h-8 rounded-sm pl-8 text-xs"
+                aria-label="Filter selection"
+              />
+              {reviewSelectionFilter && (
+                <button
+                  type="button"
+                  onClick={() => setReviewSelectionFilter("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="size-3.5" />
+                </button>
+              )}
+            </div>
+            {reviewSelectionFilter.trim() && filteredReviewAssetIds.length > 0 && (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                className="h-8 shrink-0 rounded-sm text-[11px] text-muted-foreground hover:text-destructive"
+                onClick={() => {
+                  const toRemove = new Set(filteredReviewAssetIds);
+                  applyAssetSelection(
+                    new Set([...selectedIds].filter((id) => !toRemove.has(id))),
+                    selectedId && toRemove.has(selectedId) ? null : selectedId,
+                  );
+                  setReviewSelectionFilter("");
+                }}
+              >
+                Remove {filteredReviewAssetIds.length.toLocaleString()} matching
+              </Button>
+            )}
+          </div>
+
           <div className="quiet-scrollbar max-h-80 overflow-y-auto rounded-md border" role="list" aria-label="Selected assets">
-            {[...selectedIds].slice(0, reviewSelectionLimit).map((id) => {
-              const item = selectedAssetCacheRef.current.get(id) ?? assets.find((asset) => asset.id === id);
-              const path = item?.relativePath ?? selectedPathCacheRef.current.get(id) ?? `Asset ${id}`;
-              const name = item?.name ?? path.split(/[\\/]/).at(-1) ?? `Asset ${id}`;
-              return <div key={id} role="listitem" className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)_28px] items-center gap-3 border-b px-3 py-2 last:border-b-0">
-                <div className="min-w-0"><p className="truncate text-xs font-medium">{name}</p><p className="truncate text-[11px] text-muted-foreground">{item ? `${item.packName} · ${typeLabels[item.assetType]}` : "Result not currently loaded"}</p></div>
-                <p className="self-center truncate font-mono text-[11px] text-muted-foreground" title={path}>{path}</p>
-                <Button type="button" variant="ghost" size="icon-xs" className="rounded-sm text-muted-foreground hover:text-destructive" onClick={() => deselectReviewedAsset(id)} aria-label={`Remove ${name} from selection`} title="Remove from selection"><X /></Button>
-              </div>;
-            })}
-            {selectedIds.size > reviewSelectionLimit && <div className="px-3 py-2"><Button type="button" variant="ghost" size="xs" className="w-full rounded-sm text-[11px] text-muted-foreground" onClick={() => setReviewSelectionLimit((current) => current + 250)}>Show {Math.min(250, selectedIds.size - reviewSelectionLimit).toLocaleString()} more selected assets</Button></div>}
+            {filteredReviewAssetIds.length === 0 ? (
+              <div className="p-6 text-center text-xs text-muted-foreground">
+                No selected assets match &ldquo;{reviewSelectionFilter}&rdquo;
+              </div>
+            ) : (
+              filteredReviewAssetIds.slice(0, reviewSelectionLimit).map((id) => {
+                const item = selectedAssetCacheRef.current.get(id) ?? assets.find((asset) => asset.id === id);
+                const path = item?.relativePath ?? selectedPathCacheRef.current.get(id) ?? `Asset ${id}`;
+                const name = item?.name ?? path.split(/[\\/]/).at(-1) ?? `Asset ${id}`;
+                return (
+                  <div key={id} role="listitem" className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)_28px] items-center gap-3 border-b px-3 py-2 last:border-b-0">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium">{name}</p>
+                      <p className="truncate text-[11px] text-muted-foreground">
+                        {item ? `${item.packName} · ${typeLabels[item.assetType]}` : "Result not currently loaded"}
+                      </p>
+                    </div>
+                    <p className="self-center truncate font-mono text-[11px] text-muted-foreground" title={path}>{path}</p>
+                    <Button type="button" variant="ghost" size="icon-xs" className="rounded-sm text-muted-foreground hover:text-destructive" onClick={() => deselectReviewedAsset(id)} aria-label={`Remove ${name} from selection`} title="Remove from selection"><X /></Button>
+                  </div>
+                );
+              })
+            )}
+            {filteredReviewAssetIds.length > reviewSelectionLimit && (
+              <div className="px-3 py-2">
+                <Button type="button" variant="ghost" size="xs" className="w-full rounded-sm text-[11px] text-muted-foreground" onClick={() => setReviewSelectionLimit((current) => current + 250)}>
+                  Show {Math.min(250, filteredReviewAssetIds.length - reviewSelectionLimit).toLocaleString()} more matching assets
+                </Button>
+              </div>
+            )}
           </div>
           <DialogFooter><Button type="button" size="sm" onClick={() => setReviewSelectionOpen(false)}>Done</Button></DialogFooter>
         </DialogContent>
@@ -3355,23 +3441,23 @@ function App() {
           </DialogHeader>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 text-xs">
             {[
-              ["Ctrl K", "Command palette"],
-              ["Ctrl F", "Search"],
-              ["Ctrl Shift F", "Filters"],
-              ["Ctrl B", "Toggle sidebar"],
-              ["Ctrl I", "Toggle inspector"],
-              ["Ctrl A", "Select all results"],
+              [formatForDisplay("Mod+K"), "Command palette"],
+              [formatForDisplay("Mod+F"), "Search"],
+              [formatForDisplay("Mod+Shift+F"), "Filters"],
+              [formatForDisplay("Mod+B"), "Toggle sidebar"],
+              [formatForDisplay("Mod+I"), "Toggle inspector"],
+              [formatForDisplay("Mod+A"), "Select all results"],
               ["G / L", "Grid / list view"],
-              ["Ctrl E", "Export to active project"],
+              [formatForDisplay("Mod+E"), "Export to active project"],
               ["T", "Add a tag to selection"],
-              ["Ctrl Shift C", "New collection from selection"],
+              [formatForDisplay("Mod+Shift+C"), "New collection from selection"],
               ["↑ ↓ ← →", "Navigate assets"],
               ["Shift + arrows", "Extend selection"],
-              ["Ctrl + click", "Toggle selection"],
+              [`${formatForDisplay("Mod")} + click`, "Toggle selection"],
               ["Enter", "Open selected asset"],
               ["Space", "Play or pause audio"],
               ["Delete", activeProject ? "Remove from active project view" : "Remove from Lootbox"],
-              ["Ctrl Shift A", "Clear selection"],
+              [formatForDisplay("Mod+Shift+A"), "Clear selection"],
               ["?", "Show shortcuts"],
             ].map(([keys, action]) => (
               <div key={keys} className="contents">
