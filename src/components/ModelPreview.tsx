@@ -3,10 +3,12 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, Grid3X3, Orbit } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import type { ModelStats } from "../types";
 import { disposeModel, prepareModelForPreview } from "./modelPreviewUtils";
+import { cn } from "@/lib/utils";
 
 interface Props {
   path: string;
@@ -17,11 +19,58 @@ interface Props {
 export function ModelPreview({ path, onStats, onError }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [wireframe, setWireframe] = useState(false);
+  const [autoRotate, setAutoRotate] = useState(false);
+
   const onStatsRef = useRef(onStats);
   const onErrorRef = useRef(onError);
   onStatsRef.current = onStats;
   onErrorRef.current = onError;
+
+  const modelRef = useRef<THREE.Object3D | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
+  const initialCameraStateRef = useRef<{
+    position: THREE.Vector3;
+    target: THREE.Vector3;
+  } | null>(null);
+  const scheduleRenderRef = useRef<() => void>(() => {});
+
+  // Apply wireframe toggle to all meshes
+  useEffect(() => {
+    if (!modelRef.current) return;
+    modelRef.current.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach((mat) => {
+            mat.wireframe = wireframe;
+          });
+        } else if (child.material) {
+          child.material.wireframe = wireframe;
+        }
+      }
+    });
+    scheduleRenderRef.current();
+  }, [wireframe]);
+
+  // Apply turntable auto-rotation
+  useEffect(() => {
+    if (controlsRef.current) {
+      controlsRef.current.autoRotate = autoRotate;
+      controlsRef.current.autoRotateSpeed = 2.5;
+    }
+    scheduleRenderRef.current();
+  }, [autoRotate]);
+
+  const handleResetCamera = () => {
+    if (controlsRef.current && initialCameraStateRef.current) {
+      controlsRef.current.object.position.copy(initialCameraStateRef.current.position);
+      controlsRef.current.target.copy(initialCameraStateRef.current.target);
+      controlsRef.current.update();
+      scheduleRenderRef.current();
+    }
+  };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -29,6 +78,7 @@ export function ModelPreview({ path, onStats, onError }: Props) {
 
     let disposed = false;
     setError(false);
+    setLoaded(false);
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x17181b);
     const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 10_000);
@@ -44,6 +94,9 @@ export function ModelPreview({ path, onStats, onError }: Props) {
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
+    controls.autoRotate = autoRotate;
+    controls.autoRotateSpeed = 2.5;
+    controlsRef.current = controls;
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x30343b, 2.6));
     const key = new THREE.DirectionalLight(0xffffff, 3.5);
@@ -66,6 +119,8 @@ export function ModelPreview({ path, onStats, onError }: Props) {
         frame = requestAnimationFrame(render);
       }
     };
+    scheduleRenderRef.current = scheduleRender;
+
     const render = (time: number) => {
       frame = 0;
       if (disposed) return;
@@ -74,7 +129,7 @@ export function ModelPreview({ path, onStats, onError }: Props) {
       controls.update();
       renderer.render(scene, camera);
       if (settleFrames > 0) settleFrames -= 1;
-      if (mixer || interacting || settleFrames > 0) scheduleRender();
+      if (mixer || interacting || settleFrames > 0 || controls.autoRotate) scheduleRender();
     };
     const startInteraction = () => {
       interacting = true;
@@ -121,7 +176,24 @@ export function ModelPreview({ path, onStats, onError }: Props) {
           return;
         }
         model = gltf.scene;
+        modelRef.current = model;
         prepareModelForPreview(model);
+
+        // Apply current wireframe state
+        if (wireframe) {
+          model.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+              if (Array.isArray(child.material)) {
+                child.material.forEach((mat) => {
+                  mat.wireframe = true;
+                });
+              } else if (child.material) {
+                child.material.wireframe = true;
+              }
+            }
+          });
+        }
+
         scene.add(model);
         let triangles = 0;
         let vertices = 0;
@@ -146,10 +218,17 @@ export function ModelPreview({ path, onStats, onError }: Props) {
         controls.target.set(0, 0, 0);
         camera.updateProjectionMatrix();
         controls.update();
+
+        initialCameraStateRef.current = {
+          position: camera.position.clone(),
+          target: controls.target.clone(),
+        };
+
         if (gltf.animations.length > 0) {
           mixer = new THREE.AnimationMixer(model);
           mixer.clipAction(gltf.animations[0]).play();
         }
+        setLoaded(true);
         previousTime = performance.now();
         scheduleRender();
       },
@@ -184,6 +263,8 @@ export function ModelPreview({ path, onStats, onError }: Props) {
       controls.removeEventListener("end", finishInteraction);
       controls.removeEventListener("change", handleControlChange);
       controls.dispose();
+      controlsRef.current = null;
+      modelRef.current = null;
       mixer?.stopAllAction();
       if (model) disposeModel(model);
       renderer.dispose();
@@ -196,6 +277,73 @@ export function ModelPreview({ path, onStats, onError }: Props) {
       className="model-preview relative mx-3 h-[218px] overflow-hidden rounded-md border bg-muted/10"
       ref={hostRef}
     >
+      {/* 3D Viewport Controls Overlay */}
+      {loaded && !error && (
+        <div className="absolute top-2 right-2 z-10 flex items-center gap-0.5 rounded-sm border border-border/70 bg-background/85 p-0.5 shadow-xs backdrop-blur-xs">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  className={cn(
+                    "size-6 rounded-xs text-muted-foreground transition-colors hover:text-foreground",
+                    wireframe && "bg-primary/20 text-primary hover:bg-primary/25 hover:text-primary"
+                  )}
+                  onClick={() => setWireframe((w) => !w)}
+                  aria-label={wireframe ? "Shaded view" : "Wireframe view"}
+                  aria-pressed={wireframe}
+                >
+                  <Grid3X3 className="size-3.5" />
+                </Button>
+              }
+            />
+            <TooltipContent>{wireframe ? "Switch to shaded view" : "Toggle wireframe topology"}</TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  className={cn(
+                    "size-6 rounded-xs text-muted-foreground transition-colors hover:text-foreground",
+                    autoRotate && "bg-primary/20 text-primary hover:bg-primary/25 hover:text-primary"
+                  )}
+                  onClick={() => setAutoRotate((r) => !r)}
+                  aria-label={autoRotate ? "Pause turntable" : "Auto-rotate turntable"}
+                  aria-pressed={autoRotate}
+                >
+                  <Orbit className="size-3.5" />
+                </Button>
+              }
+            />
+            <TooltipContent>{autoRotate ? "Pause turntable" : "Start turntable spin"}</TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="size-6 rounded-xs text-muted-foreground transition-colors hover:text-foreground"
+                  onClick={handleResetCamera}
+                  aria-label="Reset camera"
+                >
+                  <RotateCcw className="size-3.5" />
+                </Button>
+              }
+            />
+            <TooltipContent>Reset camera</TooltipContent>
+          </Tooltip>
+        </div>
+      )}
+
       {error && (
         <div className="absolute inset-0 z-10 grid place-items-center bg-background px-6 text-center text-xs text-muted-foreground" role="status">
           <div>
