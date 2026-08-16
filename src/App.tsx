@@ -3,6 +3,8 @@ import type { RefObject } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useHotkeys } from "@tanstack/react-hotkeys";
+import { Kbd } from "@/components/ui/kbd";
 import {
   AlertCircle,
   Activity,
@@ -37,6 +39,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Command,
   Search,
   SearchX,
   Trash2,
@@ -46,6 +49,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import { AssetCard } from "./components/AssetCard";
+import { CommandPalette } from "./components/CommandPalette";
 import { DetailPanel } from "./components/DetailPanel";
 import { EmptyState } from "./components/EmptyState";
 import { ImportStageRail } from "./components/QuietAcknowledgment";
@@ -479,6 +483,7 @@ function App() {
   const [filterDraft, setFilterDraft] = useState<AssetFilters>({ ...clearedFilters });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [reviewSelectionOpen, setReviewSelectionOpen] = useState(false);
   const [reviewSelectionLimit, setReviewSelectionLimit] = useState(250);
@@ -984,55 +989,82 @@ function App() {
     await assetPagesQuery.fetchNextPage();
   }, [assetPagesQuery.fetchNextPage, assetPagesQuery.hasNextPage, assetPagesQuery.isFetchingNextPage, assetPagesQuery.isPlaceholderData]);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (isTypingTarget(event.target)) return;
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b" && !event.altKey) {
-        event.preventDefault();
-        setLeftPanelCollapsed((current) => !current);
-        return;
-      }
-      if ((event.metaKey || event.ctrlKey) && (event.key.toLowerCase() === "i" || (event.altKey && event.key.toLowerCase() === "b"))) {
-        event.preventDefault();
-        setRightPanelCollapsed((current) => !current);
-        return;
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
-        if (event.shiftKey) {
-          event.preventDefault();
-          setFiltersOpen((open) => !open);
-          return;
+  useHotkeys([
+    {
+      hotkey: "Mod+K",
+      callback: () => setCommandPaletteOpen((open) => !open),
+    },
+    {
+      hotkey: "Mod+B",
+      callback: () => setLeftPanelCollapsed((current) => !current),
+    },
+    {
+      hotkey: "Mod+I",
+      callback: () => setRightPanelCollapsed((current) => !current),
+    },
+    {
+      hotkey: "Mod+Alt+B",
+      callback: () => setRightPanelCollapsed((current) => !current),
+    },
+    {
+      hotkey: "Mod+F",
+      callback: () => searchRef.current?.focus(),
+    },
+    {
+      hotkey: "Mod+Shift+F",
+      callback: () => setFiltersOpen((open) => !open),
+    },
+    {
+      hotkey: "Mod+E",
+      callback: () => {
+        if (selectedIdsRef.current.size > 0) {
+          if (activeProject?.available) void addSelectionToGodot(activeProject.id);
+          else setNotice("Select an available workspace project before exporting");
         }
-        event.preventDefault();
-        searchRef.current?.focus();
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "e" && selectedIdsRef.current.size > 0) {
-        event.preventDefault();
-        if (activeProject?.available) void addSelectionToGodot(activeProject.id);
-        else setNotice("Select an available workspace project before exporting");
-      }
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "c" && selectedIdsRef.current.size > 0) {
-        event.preventDefault();
-        setAddSelectionToNewCollection(true);
-        setCreatingCollection(true);
-      }
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "a") {
-        event.preventDefault();
-        clearAssetSelection();
-      }
-      if (!event.metaKey && !event.ctrlKey && !event.altKey && isAssetKeyboardTarget(event.target)) {
-        if (event.key.toLowerCase() === "g") setView("grid");
-        if (event.key.toLowerCase() === "l") setView("list");
-        if (event.key.toLowerCase() === "t" && selectedIdsRef.current.size > 0) tagInputRef.current?.focus();
-      }
-      if (event.key === "?") {
-        event.preventDefault();
-        setShortcutsOpen(true);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeProject, clearAssetSelection, filters]);
+      },
+    },
+    {
+      hotkey: "Mod+Shift+C",
+      callback: () => {
+        if (selectedIdsRef.current.size > 0) {
+          setAddSelectionToNewCollection(true);
+          setCreatingCollection(true);
+        }
+      },
+    },
+    {
+      hotkey: "Mod+Shift+A",
+      callback: () => clearAssetSelection(),
+    },
+    {
+      hotkey: "Shift+/" as any,
+      callback: () => setShortcutsOpen(true),
+    },
+    {
+      hotkey: "/",
+      callback: () => setShortcutsOpen(true),
+    },
+    {
+      hotkey: "G",
+      callback: (event) => {
+        if (isAssetKeyboardTarget(event.target)) setView("grid");
+      },
+    },
+    {
+      hotkey: "L",
+      callback: (event) => {
+        if (isAssetKeyboardTarget(event.target)) setView("list");
+      },
+    },
+    {
+      hotkey: "T",
+      callback: (event) => {
+        if (isAssetKeyboardTarget(event.target) && selectedIdsRef.current.size > 0) {
+          tagInputRef.current?.focus();
+        }
+      },
+    },
+  ]);
 
   async function runQueuedImport(path: string) {
     const jobId = crypto.randomUUID();
@@ -1955,6 +1987,28 @@ function App() {
     void api.revealAsset(path).catch((caught) => reportError(caught, "reveal-asset"));
   }, [reportError]);
 
+  const selectAllAssets = useCallback(async () => {
+    try {
+      const scopeKey = selectionScopeKeyRef.current;
+      const matches = await api.assetSelections(query);
+      if (scopeKey !== selectionScopeKeyRef.current) return;
+      const idSet = new Set(matches.map((match) => match.id));
+      selectedPathCacheRef.current = new Map(
+        matches.map((match) => [match.id, match.absolutePath]),
+      );
+      selectedAssetCacheRef.current = new Map(
+        assets
+          .filter((asset) => idSet.has(asset.id))
+          .map((asset) => [asset.id, asset]),
+      );
+      const activeId = assets.find((asset) => idSet.has(asset.id))?.id ?? null;
+      selectionAnchorRef.current = activeId;
+      applyAssetSelection(idSet, activeId);
+    } catch (caught) {
+      reportError(caught, "select-all");
+    }
+  }, [applyAssetSelection, assets, query, reportError]);
+
   useEffect(() => {
     const handleLibraryKeys = (event: KeyboardEvent) => {
       if (
@@ -1970,23 +2024,7 @@ function App() {
 
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
         event.preventDefault();
-        void (async () => {
-          const scopeKey = selectionScopeKeyRef.current;
-          const matches = await api.assetSelections(query);
-          if (scopeKey !== selectionScopeKeyRef.current) return;
-          const idSet = new Set(matches.map((match) => match.id));
-          selectedPathCacheRef.current = new Map(
-            matches.map((match) => [match.id, match.absolutePath]),
-          );
-          selectedAssetCacheRef.current = new Map(
-            assets
-              .filter((asset) => idSet.has(asset.id))
-              .map((asset) => [asset.id, asset]),
-          );
-          const activeId = assets.find((asset) => idSet.has(asset.id))?.id ?? null;
-          selectionAnchorRef.current = activeId;
-          applyAssetSelection(idSet, activeId);
-        })().catch((caught) => reportError(caught, "select-all"));
+        void selectAllAssets();
         return;
       }
 
@@ -2220,6 +2258,20 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="rounded-md gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setCommandPaletteOpen(true)}
+              aria-label="Open command palette"
+              title="Command Palette (Ctrl+K)"
+            >
+              <Command className="size-3.5" />
+              <span className="max-[1150px]:hidden">Commands</span>
+              <Kbd className="ml-0.5">⌘K</Kbd>
+            </Button>
+
             <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
               <PopoverTrigger
                 render={
@@ -3303,6 +3355,7 @@ function App() {
           </DialogHeader>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 text-xs">
             {[
+              ["Ctrl K", "Command palette"],
               ["Ctrl F", "Search"],
               ["Ctrl Shift F", "Filters"],
               ["Ctrl B", "Toggle sidebar"],
@@ -3322,7 +3375,7 @@ function App() {
               ["?", "Show shortcuts"],
             ].map(([keys, action]) => (
               <div key={keys} className="contents">
-                <kbd className="w-fit rounded border bg-muted/40 px-2 py-1 font-mono text-[11px] text-foreground">{keys}</kbd>
+                <Kbd className="w-fit text-foreground">{keys}</Kbd>
                 <span className="self-center text-muted-foreground">{action}</span>
               </div>
             ))}
@@ -3442,6 +3495,59 @@ function App() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <CommandPalette
+        open={commandPaletteOpen}
+        onOpenChange={setCommandPaletteOpen}
+        snapshot={snapshot}
+        activeProject={activeProject}
+        savedViews={savedViews}
+        selectedCount={selectedIds.size}
+        view={view}
+        leftPanelCollapsed={leftPanelCollapsed}
+        rightPanelCollapsed={rightPanelCollapsed}
+        onSelectScope={(scope) => {
+          setSelection(scope);
+          setActiveSavedViewId(null);
+          clearAssetSelection();
+        }}
+        onOpenSavedView={openSavedView}
+        onActivateProject={activateProject}
+        onImportPack={() => void importPack()}
+        onStartCollection={() => {
+          setAddSelectionToNewCollection(selectedIds.size > 0);
+          setCreatingCollection(true);
+        }}
+        onSaveCurrentView={() => {
+          setSavedViewName("");
+          setSavingView(true);
+        }}
+        onAddProject={() => void addGodotProject()}
+        onExportToActiveProject={() => {
+          if (activeProject?.available) void addSelectionToGodot(activeProject.id);
+          else setNotice("Select an available workspace project before exporting");
+        }}
+        onOpenSettings={() => {
+          setSettingsMessage("");
+          setSettingsOpen(true);
+        }}
+        onOpenShortcuts={() => setShortcutsOpen(true)}
+        onSetView={setView}
+        onToggleSidebar={() => setLeftPanelCollapsed((current) => !current)}
+        onToggleDetailPanel={() => setRightPanelCollapsed((current) => !current)}
+        onSelectAll={() => void selectAllAssets()}
+        onClearSelection={clearAssetSelection}
+        onSetFilterType={(type) => {
+          setFilters((current) => ({ ...current, type: type ?? "" }));
+          setActiveSavedViewId(null);
+        }}
+        onSetSort={(sort) => {
+          setSort(sort as "name" | "newest" | "largest" | "type");
+          setActiveSavedViewId(null);
+        }}
+        onCleanCache={() => void api.cleanCache().then((status) => queryClient.setQueryData(["cache-status"], status)).catch((caught) => reportError(caught, "cache-clean"))}
+        onClearCache={() => setConfirmClearCache(true)}
+      />
 
       {importing && (
         <div className="quiet-import-arrival fixed right-4 bottom-4 z-50 w-80 rounded-lg border bg-popover/95 p-4 text-xs shadow-xl backdrop-blur-md" role="status" aria-live="polite" aria-atomic="true" aria-label="Import progress">
