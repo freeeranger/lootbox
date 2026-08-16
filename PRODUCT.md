@@ -60,7 +60,7 @@ Lootbox is a private, non-destructive desktop asset library: it combines local i
 - `src/` contains the working React interface and its automated tests.
 - `src-tauri/src/lib.rs` contains the local scanner, SQLite schema and migrations, search, backup, preview support, and native commands.
 - `src-tauri/tauri.conf.json` and `packaging/` contain the desktop identity and packaging metadata.
-- Release bundles for versions through `0.4.0` are present under `src-tauri/target/release/bundle/`.
+- Release bundles are present under `src-tauri/target/release/bundle/`.
 - No external testimonials, customer logos, usage benchmarks, press coverage, or other third-party proof are currently recorded in the repository.
 
 ## Product Principles

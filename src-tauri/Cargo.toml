@@ -1,6 +1,6 @@
 [package]
 name = "lootbox"
-version = "0.4.0"
+version = "0.1.0"
 description = "A quiet, local-first browser for game assets"
 authors = ["Lootbox contributors"]
 edition = "2021"
