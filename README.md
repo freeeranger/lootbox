@@ -12,7 +12,7 @@
   <img src="docs/screenshot.png" alt="Lootbox preview" width="100%" />
 </p>
 
-Lootbox turns messy folders of asset packs into a searchable, previewable library. Browse assets, inspect textures and models, and export straight into Godot without touching your original files.
+Lootbox is a local asset manager that indexes your existing folders into a searchable library. It allows you to preview 3D models and textures, and export selected files directly into a Godot project without modifying the original source directories.
 
 ## Features
 
@@ -39,4 +39,4 @@ npm run tauri build
 
 ## License
 
-MIT
+GPLv3
