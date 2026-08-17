@@ -12,7 +12,7 @@
   <img src="docs/screenshot.png" alt="Lootbox preview" width="100%" />
 </p>
 
-Lootbox is a local asset manager that indexes your existing folders into a searchable library. It allows you to preview 3D models and textures, and export selected files directly into a Godot project without modifying the original source directories.
+Lootbox is a local asset manager that indexes your existing folders into a searchable library. It allows you to preview all your asset types, and export selected files directly into a Godot project without modifying the original source directories.
 
 ## Features
 
@@ -22,6 +22,10 @@ Lootbox is a local asset manager that indexes your existing folders into a searc
 - Fast search, tags, and collections
 - Duplicate file detection
 - Non-destructive (never modifies source folders)
+
+## Why?
+
+Built as a tool for myself so that I can browse all of my asset packs in an easy way. This also means that lootbox might be quite opinionated.
 
 ## Development
 
