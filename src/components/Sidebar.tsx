@@ -48,7 +48,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { cn, collapseHomePath } from "@/lib/utils";
+import { cn, collapseHomePath, sortByNatural } from "@/lib/utils";
 import type {
   AssetType,
   LibrarySelection,
@@ -267,19 +267,49 @@ function SidebarComponent({
   const normalizedSidebarQuery = sidebarQuery.trim().toLocaleLowerCase();
   const isFiltering = normalizedSidebarQuery.length > 0;
 
-  const filteredPacks = useMemo(() => snapshot.packs.filter((pack) =>
-    !normalizedSidebarQuery || `${pack.name} ${pack.rootPath}`.toLocaleLowerCase().includes(normalizedSidebarQuery),
-  ), [normalizedSidebarQuery, snapshot.packs]);
+  const filteredPacks = useMemo(
+    () =>
+      sortByNatural(
+        snapshot.packs.filter(
+          (pack) =>
+            !normalizedSidebarQuery ||
+            `${pack.name} ${pack.rootPath}`.toLocaleLowerCase().includes(normalizedSidebarQuery),
+        ),
+        (pack) => pack.name,
+      ),
+    [normalizedSidebarQuery, snapshot.packs],
+  );
 
-  const filteredCollections = useMemo(() => snapshot.collections.filter((collection) =>
-    !normalizedSidebarQuery || collection.name.toLocaleLowerCase().includes(normalizedSidebarQuery),
-  ), [normalizedSidebarQuery, snapshot.collections]);
+  const filteredCollections = useMemo(
+    () =>
+      sortByNatural(
+        snapshot.collections.filter(
+          (collection) =>
+            !normalizedSidebarQuery ||
+            collection.name.toLocaleLowerCase().includes(normalizedSidebarQuery),
+        ),
+        (collection) => collection.name,
+      ),
+    [normalizedSidebarQuery, snapshot.collections],
+  );
 
-  const filteredSavedViews = useMemo(() => savedViews.filter((view) =>
-    !normalizedSidebarQuery || view.name.toLocaleLowerCase().includes(normalizedSidebarQuery),
-  ), [normalizedSidebarQuery, savedViews]);
+  const filteredSavedViews = useMemo(
+    () =>
+      sortByNatural(
+        savedViews.filter(
+          (view) =>
+            !normalizedSidebarQuery ||
+            view.name.toLocaleLowerCase().includes(normalizedSidebarQuery),
+        ),
+        (view) => view.name,
+      ),
+    [normalizedSidebarQuery, savedViews],
+  );
 
-
+  const sortedProjects = useMemo(
+    () => sortByNatural(snapshot.projects, (project) => project.name),
+    [snapshot.projects],
+  );
 
   const showSidebarSearch = snapshot.packs.length + snapshot.collections.length + savedViews.length > 10;
 
@@ -333,7 +363,7 @@ function SidebarComponent({
               <DropdownMenuLabel className="px-2 py-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 Godot Projects
               </DropdownMenuLabel>
-              {snapshot.projects.map((project) => (
+              {sortedProjects.map((project) => (
                 <DropdownMenuItem
                   key={project.id}
                   className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-xs"

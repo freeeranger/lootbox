@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { cn, collapseHomePath } from "@/lib/utils";
+import { cn, collapseHomePath, compareNatural } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -712,7 +712,7 @@ function DetailPanelComponent({
                     const [leftRole, leftResolution] = textureResourceRank(left);
                     const [rightRole, rightResolution] = textureResourceRank(right);
                     return leftRole - rightRole || leftResolution - rightResolution ||
-                      left.relativePath.localeCompare(right.relativePath);
+                      compareNatural(left.relativePath, right.relativePath);
                   })
                   .map((resource) => (
                   <button

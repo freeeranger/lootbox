@@ -48,6 +48,74 @@ use crate::{
     }
 
     #[test]
+    fn naturally_sorts_packs_collections_and_projects() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+
+        for (name, path) in [
+            ("pack vol 56", "/packs/p56"),
+            ("pack vol 9", "/packs/p9"),
+            ("pack vol 2", "/packs/p2"),
+            ("pack vol 100", "/packs/p100"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO packs(name, root_path) VALUES (?1, ?2)",
+                    params![name, path],
+                )
+                .unwrap();
+        }
+
+        let mut statement = connection
+            .prepare("SELECT name FROM packs ORDER BY name COLLATE LOOTBOX_NATURAL ASC")
+            .unwrap();
+        let pack_names = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            pack_names,
+            [
+                "pack vol 2",
+                "pack vol 9",
+                "pack vol 56",
+                "pack vol 100",
+            ]
+        );
+
+        for name in ["Hero 100", "Hero 9", "Hero 20", "Hero 2"] {
+            connection
+                .execute(
+                    "INSERT INTO collections(name) VALUES (?1)",
+                    params![name],
+                )
+                .unwrap();
+        }
+
+        let mut coll_statement = connection
+            .prepare("SELECT name FROM collections ORDER BY name COLLATE LOOTBOX_NATURAL ASC")
+            .unwrap();
+        let coll_names = coll_statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            coll_names,
+            [
+                "Hero 2",
+                "Hero 9",
+                "Hero 20",
+                "Hero 100",
+            ]
+        );
+    }
+
+
+    #[test]
     fn classifies_common_game_asset_formats() {
         assert_eq!(classify_extension("png"), "image");
         assert_eq!(

@@ -8,8 +8,8 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { collapseHomePath } from "@/lib/utils";
-import { memo } from "react";
+import { collapseHomePath, sortByNatural } from "@/lib/utils";
+import { memo, useMemo } from "react";
 import type { LibrarySnapshot, ProjectStatus } from "../types";
 
 interface Props {
@@ -69,12 +69,19 @@ function LibraryHealthComponent({
   onViewProject,
   onRefreshProject,
 }: Props) {
-  const unavailablePacks = snapshot.packs.filter((pack) => !pack.available);
-  const unavailableProjects = snapshot.projects.filter((project) => !project.available);
+  const unavailablePacks = useMemo(
+    () => sortByNatural(snapshot.packs.filter((pack) => !pack.available), (pack) => pack.name),
+    [snapshot.packs],
+  );
+  const unavailableProjects = useMemo(
+    () => sortByNatural(snapshot.projects.filter((project) => !project.available), (project) => project.name),
+    [snapshot.projects],
+  );
   const projectAttention = projectStatus
     ? projectStatus.sourceChangedFiles + projectStatus.sourceMissingFiles + projectStatus.projectModifiedFiles + projectStatus.projectMissingFiles
     : 0;
   const attentionCount = snapshot.missingAssets + unavailablePacks.length + unavailableProjects.length + projectAttention;
+
 
   return (
     <div className="quiet-scrollbar h-full overflow-y-auto p-5">

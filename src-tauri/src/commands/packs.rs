@@ -124,7 +124,7 @@ pub fn get_library_snapshot(state: State<'_, AppState>) -> Result<LibrarySnapsho
             FROM packs p
             LEFT JOIN assets a ON a.pack_id = p.id AND a.is_primary = 1 AND a.excluded = 0 AND a.missing = 0
             GROUP BY p.id
-            ORDER BY p.name COLLATE NOCASE
+            ORDER BY p.name COLLATE LOOTBOX_NATURAL
             "#,
         )?;
         let rows = statement
@@ -153,7 +153,7 @@ pub fn get_library_snapshot(state: State<'_, AppState>) -> Result<LibrarySnapsho
             LEFT JOIN collection_assets ca ON ca.collection_id = c.id
             LEFT JOIN assets a ON a.id = ca.asset_id AND a.is_primary = 1 AND a.excluded = 0
             GROUP BY c.id
-            ORDER BY c.name COLLATE NOCASE
+            ORDER BY c.name COLLATE LOOTBOX_NATURAL
             "#,
         )?;
         let rows = statement
@@ -178,7 +178,7 @@ pub fn get_library_snapshot(state: State<'_, AppState>) -> Result<LibrarySnapsho
             LEFT JOIN project_exports exported ON exported.project_id = project.id
             LEFT JOIN assets asset ON asset.id = exported.asset_id
             GROUP BY project.id
-            ORDER BY project.name COLLATE NOCASE
+            ORDER BY project.name COLLATE LOOTBOX_NATURAL
             "#,
         )?;
         let rows = statement
@@ -307,9 +307,9 @@ pub fn get_filter_options(state: State<'_, AppState>) -> Result<FilterOptions> {
         Ok(rows)
     }
     Ok(FilterOptions {
-        extensions: string_column(&connection, "SELECT DISTINCT extension FROM assets WHERE extension != '' AND missing = 0 ORDER BY extension COLLATE NOCASE")?,
-        map_roles: string_column(&connection, "SELECT DISTINCT map_role FROM assets WHERE map_role IS NOT NULL AND missing = 0 ORDER BY map_role COLLATE NOCASE")?,
-        tags: string_column(&connection, "SELECT name FROM tags ORDER BY name COLLATE NOCASE")?,
+        extensions: string_column(&connection, "SELECT DISTINCT extension FROM assets WHERE extension != '' AND missing = 0 ORDER BY extension COLLATE LOOTBOX_NATURAL")?,
+        map_roles: string_column(&connection, "SELECT DISTINCT map_role FROM assets WHERE map_role IS NOT NULL AND missing = 0 ORDER BY map_role COLLATE LOOTBOX_NATURAL")?,
+        tags: string_column(&connection, "SELECT name FROM tags ORDER BY name COLLATE LOOTBOX_NATURAL")?,
     })
 }
 

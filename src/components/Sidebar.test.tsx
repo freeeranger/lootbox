@@ -76,4 +76,37 @@ describe("Sidebar component", () => {
     expect(screen.getByText("Project assets")).toBeInTheDocument();
     expect(screen.getByText("Project sync & health")).toBeInTheDocument();
   });
+
+  it("naturally sorts packs, collections, and projects taking full numbers into account", () => {
+    const unsortedSnapshot: LibrarySnapshot = {
+      ...baseSnapshot,
+      packs: [
+        { id: 1, name: "pack vol 56", rootPath: "/assets/p56", assetCount: 5, lastScannedAt: null, available: true, removedAssetCount: 0, missingAssetCount: 0 },
+        { id: 2, name: "pack vol 9", rootPath: "/assets/p9", assetCount: 5, lastScannedAt: null, available: true, removedAssetCount: 0, missingAssetCount: 0 },
+        { id: 3, name: "pack vol 2", rootPath: "/assets/p2", assetCount: 5, lastScannedAt: null, available: true, removedAssetCount: 0, missingAssetCount: 0 },
+      ],
+      collections: [
+        { id: 1, name: "Hero 100", assetCount: 3 },
+        { id: 2, name: "Hero 9", assetCount: 3 },
+        { id: 3, name: "Hero 20", assetCount: 3 },
+      ],
+    };
+
+    render(<Sidebar {...defaultProps} snapshot={unsortedSnapshot} />);
+
+    const packElements = screen.getAllByRole("button", { name: /pack vol/i });
+    expect(packElements.map((el) => el.textContent)).toEqual([
+      expect.stringContaining("pack vol 2"),
+      expect.stringContaining("pack vol 9"),
+      expect.stringContaining("pack vol 56"),
+    ]);
+
+    const collectionElements = screen.getAllByRole("button", { name: /Hero/i });
+    expect(collectionElements.map((el) => el.textContent)).toEqual([
+      expect.stringContaining("Hero 9"),
+      expect.stringContaining("Hero 20"),
+      expect.stringContaining("Hero 100"),
+    ]);
+  });
 });
+

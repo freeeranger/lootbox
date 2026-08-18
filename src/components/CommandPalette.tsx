@@ -40,8 +40,9 @@ import type {
   LibrarySelection,
 } from "@/types";
 import type { SavedAssetView } from "@/savedViews";
+import { useMemo } from "react";
 import { Kbd } from "@/components/ui/kbd";
-import { cn } from "@/lib/utils";
+import { cn, sortByNatural } from "@/lib/utils";
 import { formatForDisplay } from "@tanstack/react-hotkeys";
 
 export interface CommandPaletteProps {
@@ -105,6 +106,23 @@ export function CommandPalette({
   onCleanCache,
   onClearCache,
 }: CommandPaletteProps) {
+  const sortedProjects = useMemo(
+    () => sortByNatural(snapshot.projects, (project) => project.name),
+    [snapshot.projects],
+  );
+  const sortedPacks = useMemo(
+    () => sortByNatural(snapshot.packs, (pack) => pack.name),
+    [snapshot.packs],
+  );
+  const sortedCollections = useMemo(
+    () => sortByNatural(snapshot.collections, (collection) => collection.name),
+    [snapshot.collections],
+  );
+  const sortedSavedViews = useMemo(
+    () => sortByNatural(savedViews, (view) => view.name),
+    [savedViews],
+  );
+
   const runCommand = (action: () => void) => {
     onOpenChange(false);
     action();
@@ -223,7 +241,7 @@ export function CommandPalette({
             )}
           </CommandItem>
 
-          {snapshot.projects.map((project) => {
+          {sortedProjects.map((project) => {
             const isTarget = activeProject?.id === project.id;
             return (
               <CommandItem
@@ -252,9 +270,9 @@ export function CommandPalette({
         </CommandGroup>
 
         {/* Packs */}
-        {snapshot.packs.length > 0 && (
+        {sortedPacks.length > 0 && (
           <CommandGroup heading="Packs">
-            {snapshot.packs.map((pack) => (
+            {sortedPacks.map((pack) => (
               <CommandItem
                 key={pack.id}
                 keywords={["pack", "folder", pack.name, pack.rootPath]}
@@ -274,9 +292,9 @@ export function CommandPalette({
         )}
 
         {/* Collections */}
-        {snapshot.collections.length > 0 && (
+        {sortedCollections.length > 0 && (
           <CommandGroup heading="Collections">
-            {snapshot.collections.map((col) => (
+            {sortedCollections.map((col) => (
               <CommandItem
                 key={col.id}
                 keywords={["collection", col.name]}
@@ -296,9 +314,9 @@ export function CommandPalette({
         )}
 
         {/* Saved Views */}
-        {savedViews.length > 0 && (
+        {sortedSavedViews.length > 0 && (
           <CommandGroup heading="Saved Views">
-            {savedViews.map((viewItem) => (
+            {sortedSavedViews.map((viewItem) => (
               <CommandItem
                 key={viewItem.id}
                 keywords={["saved", "view", viewItem.name, viewItem.query || ""]}

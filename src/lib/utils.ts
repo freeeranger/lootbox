@@ -5,6 +5,36 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const naturalCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
+
+/**
+ * Robust natural string comparator taking numeric sequences into account.
+ * E.g. "pack vol 9" comes before "pack vol 56".
+ */
+export function compareNatural(a?: string | null, b?: string | null): number {
+  if (a === b) return 0;
+  if (a == null) return -1;
+  if (b == null) return 1;
+  return naturalCollator.compare(a, b);
+}
+
+/**
+ * Returns a new array sorted naturally by the string returned by keyFn (or the item itself if string).
+ */
+export function sortByNatural<T>(
+  items: readonly T[],
+  keyFn?: (item: T) => string | null | undefined,
+): T[] {
+  if (keyFn) {
+    return [...items].sort((a, b) => compareNatural(keyFn(a), keyFn(b)));
+  }
+  return [...items].sort((a, b) => compareNatural(a as unknown as string, b as unknown as string));
+}
+
+
 /**
  * Collapses user home directory paths to '~' for cleaner UI presentation.
  * Supports Linux (/home/user), macOS (/Users/user), and Windows (C:\Users\user).

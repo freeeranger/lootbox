@@ -622,7 +622,7 @@ pub fn write_godot_manifest(
             JOIN assets asset ON asset.id = exported.asset_id
             JOIN packs pack ON pack.id = asset.pack_id
             WHERE exported.project_id = ?1
-            ORDER BY pack.name COLLATE NOCASE, asset.relative_path COLLATE NOCASE
+            ORDER BY pack.name COLLATE LOOTBOX_NATURAL, asset.relative_path COLLATE LOOTBOX_NATURAL
             "#,
         )?;
         let entries = statement

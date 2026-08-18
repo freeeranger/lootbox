@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collapseHomePath, formatTriangles, formatVertices, getAssetSpecs, truncateMiddle } from "./utils";
+import { collapseHomePath, compareNatural, formatTriangles, formatVertices, getAssetSpecs, sortByNatural, truncateMiddle } from "./utils";
 
 describe("collapseHomePath", () => {
   it("collapses Linux /home/username paths", () => {
@@ -109,3 +109,48 @@ describe("getAssetSpecs", () => {
     });
   });
 });
+
+describe("compareNatural", () => {
+  it("sorts embedded numbers by numeric value rather than character code", () => {
+    expect(compareNatural("pack vol 9", "pack vol 56")).toBeLessThan(0);
+    expect(compareNatural("pack vol 56", "pack vol 9")).toBeGreaterThan(0);
+    expect(compareNatural("asset_1", "asset_2")).toBeLessThan(0);
+    expect(compareNatural("asset_2", "asset_10")).toBeLessThan(0);
+    expect(compareNatural("asset_10", "asset_100")).toBeLessThan(0);
+  });
+
+  it("handles case-insensitivity and null/undefined values safely", () => {
+    expect(compareNatural("Pack A", "pack a")).toBe(0);
+    expect(compareNatural(null, "pack a")).toBeLessThan(0);
+    expect(compareNatural("pack a", null)).toBeGreaterThan(0);
+    expect(compareNatural(undefined, undefined)).toBe(0);
+  });
+});
+
+describe("sortByNatural", () => {
+  it("sorts string arrays in natural order", () => {
+    const list = ["pack vol 56", "pack vol 9", "pack vol 1", "pack vol 10"];
+    expect(sortByNatural(list)).toEqual([
+      "pack vol 1",
+      "pack vol 9",
+      "pack vol 10",
+      "pack vol 56",
+    ]);
+  });
+
+  it("sorts object arrays by key function", () => {
+    const packs = [
+      { id: 1, name: "pack vol 56" },
+      { id: 2, name: "pack vol 9" },
+      { id: 3, name: "pack vol 2" },
+      { id: 4, name: "pack vol 100" },
+    ];
+    expect(sortByNatural(packs, (p) => p.name)).toEqual([
+      { id: 3, name: "pack vol 2" },
+      { id: 2, name: "pack vol 9" },
+      { id: 1, name: "pack vol 56" },
+      { id: 4, name: "pack vol 100" },
+    ]);
+  });
+});
+
