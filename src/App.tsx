@@ -2573,18 +2573,28 @@ function App() {
           />
         ) : (
         <>
-        <div className={cn("flex h-12 shrink-0 items-center justify-between border-b px-4 transition-colors", selectedIds.size > 0 && "bg-primary/[0.04] border-b-primary/25")}>
+        <div className={cn(
+          "flex h-12 shrink-0 items-center justify-between border-b px-4 transition-colors",
+          selectedIds.size > 0 ? "bg-muted/20 border-b-border" : "bg-transparent border-b-border/60"
+        )}>
           {selectedIds.size > 0 ? (
             <div className="flex min-w-0 items-center gap-2.5">
-              <span className="inline-flex items-center gap-1.5 rounded-sm border border-primary/40 bg-primary/15 px-2 py-0.5 font-mono text-[11px] font-semibold text-primary">
-                <span>{selectedIds.size.toLocaleString()}</span>
-                <span>selected</span>
-              </span>
+              <div className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs">
+                <span className="font-mono font-semibold text-primary">{selectedIds.size.toLocaleString()}</span>
+                <span className="font-medium text-foreground">selected</span>
+              </div>
               <span className="truncate text-xs text-muted-foreground hidden sm:inline">
                 {selectionSummary.includes("·") ? selectionSummary.slice(selectionSummary.indexOf("·") + 1).trim() : selectionSummary}
               </span>
-              <Button type="button" variant="secondary" size="xs" className="h-6 shrink-0 rounded-sm px-2 text-[11px] font-medium" onClick={() => setReviewSelectionOpen(true)}>
-                Review selection
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                className="h-7 shrink-0 gap-1.5 rounded-md border-border/70 bg-background/60 px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors"
+                onClick={() => setReviewSelectionOpen(true)}
+              >
+                <SlidersHorizontal className="size-3 text-muted-foreground" />
+                <span>Review selection</span>
               </Button>
             </div>
           ) : (
@@ -2609,50 +2619,68 @@ function App() {
           {selectedIds.size > 0 && selectedAsset ? (
             <div className="flex items-center gap-1.5">
               {selectedIds.size === 1 && (
-                <Button type="button" variant="outline" size="sm" className="h-7 rounded-sm px-2.5 text-xs font-normal" onClick={() => openAsset(selectedAsset)} aria-label="Open asset" title="Open asset">
-                  <ExternalLink className="size-3.5" /> <span className="max-[1150px]:hidden">Open</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  className="h-7 gap-1.5 rounded-md border-border/80 bg-background/60 px-2.5 text-xs font-medium text-foreground hover:bg-muted/70 transition-colors"
+                  onClick={() => openAsset(selectedAsset)}
+                  aria-label="Open asset in default application"
+                  title="Open asset"
+                >
+                  <ExternalLink className="size-3.5 text-muted-foreground" />
+                  <span className="max-[1150px]:hidden">Open</span>
                 </Button>
               )}
               {selection.kind !== "removed" && activeProject?.available && (
                 <Button
                   type="button"
-                  size="sm"
-                  className="h-7 gap-1.5 rounded-sm bg-primary px-2.5 text-xs font-medium text-primary-foreground shadow-xs hover:bg-primary/90"
+                  size="xs"
+                  className="h-7 gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground shadow-xs hover:bg-primary/90 transition-colors"
                   aria-label={`Review export to ${activeProject.name}`}
                   title={`Export to ${activeProject.name}`}
                   onClick={() => void addSelectionToGodot(activeProject.id)}
                 >
-                  <Gamepad2 className="size-3.5" /> <span>Export to {activeProject.name}</span>
+                  <Gamepad2 className="size-3.5" />
+                  <span>Export to {activeProject.name}</span>
                 </Button>
               )}
               {(selection.kind === "removed" || selection.kind === "project" || activeProjectId === null) && (
                 <Button
                   type="button"
-                  variant={selection.kind === "removed" ? "outline" : "ghost"}
-                  size="sm"
-                  className={cn("h-7 rounded-sm px-2 text-xs", selection.kind !== "removed" && "text-destructive hover:bg-destructive/10 hover:text-destructive")}
+                  variant="outline"
+                  size="xs"
+                  className={cn(
+                    "h-7 gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+                    selection.kind === "removed"
+                      ? "border-border/80 bg-background/60 text-foreground hover:bg-muted/70"
+                      : "border-border/60 bg-background/40 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+                  )}
                   aria-label={selection.kind === "removed" ? "Restore assets" : selection.kind === "project" ? "Remove assets from project" : "Remove assets from Lootbox"}
                   title={selection.kind === "removed" ? "Restore" : selection.kind === "project" ? "Remove from project" : "Remove from Lootbox"}
                   onClick={() => selection.kind === "removed" ? restoreAsset(selectedAsset) : requestDisplayedAssetRemoval(selectedAsset)}
                 >
-                  {selection.kind === "removed"
-                    ? <><ArchiveRestore className="size-3.5" /> <span className="max-[1150px]:hidden">Restore</span></>
-                    : selection.kind === "project"
-                      ? <><FolderMinus className="size-3.5" /> <span className="max-[1150px]:hidden">Remove</span></>
-                      : <><Trash2 className="size-3.5" /> <span className="max-[1150px]:hidden">Remove</span></>}
+                  {selection.kind === "removed" ? (
+                    <><ArchiveRestore className="size-3.5" /> <span className="max-[1150px]:hidden">Restore</span></>
+                  ) : selection.kind === "project" ? (
+                    <><FolderMinus className="size-3.5" /> <span className="max-[1150px]:hidden">Remove</span></>
+                  ) : (
+                    <><Trash2 className="size-3.5" /> <span className="max-[1150px]:hidden">Remove</span></>
+                  )}
                 </Button>
               )}
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
-                className="h-7 gap-1 rounded-sm px-2 text-xs text-muted-foreground hover:text-foreground"
+                size="xs"
+                className="h-7 gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
                 onClick={clearAssetSelection}
                 aria-label="Clear selection"
                 title="Clear selection (Esc)"
               >
                 <X className="size-3.5" />
                 <span className="max-[1150px]:hidden">Deselect</span>
+                <Kbd className="hidden md:inline-flex ml-0.5 text-[11px] text-muted-foreground/70 bg-muted/40 border-border/40 py-0 px-1 font-mono">Esc</Kbd>
               </Button>
             </div>
           ) : (selection.kind === "pack" || selection.kind === "removed" || selection.kind === "missing" || selection.kind === "collection" || selection.kind === "project") && (
@@ -2957,64 +2985,81 @@ function App() {
 
       {(error || notice || godotExportNotice) && (
         <div className={cn(
-          "fixed top-3 left-1/2 z-[80] flex max-w-[min(680px,calc(100vw-32px))] -translate-x-1/2 items-start gap-2 rounded-md border bg-popover px-3 py-2 text-xs shadow-lg",
-          error ? "border-destructive/40" : "border-primary/35",
+          "fixed top-4 left-1/2 z-[80] flex max-w-[min(640px,calc(100vw-32px))] -translate-x-1/2 items-center gap-3 rounded-lg border border-border/80 bg-popover/95 px-4 py-2.5 text-xs shadow-2xl backdrop-blur-md ring-1 ring-white/[0.08] duration-150 animate-in fade-in-0 zoom-in-95 slide-in-from-top-3",
+          error && "border-destructive/40 bg-destructive/5",
         )} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"} aria-atomic="true">
-          {error ? <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" /> : <Check className="mt-0.5 size-4 shrink-0 text-primary" />}
+          <div className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-full",
+            error ? "bg-destructive/15 text-destructive" : "bg-primary/15 text-primary"
+          )}>
+            {error ? <AlertCircle className="size-4 stroke-[2.25]" /> : <Check className="size-4 stroke-[2.25]" />}
+          </div>
           <div className="min-w-0 flex-1">
             {errorPresentation ? (
-              <><p className="font-medium">{errorPresentation.title}</p><p className="mt-0.5 text-[11px] text-muted-foreground">{errorPresentation.message}</p></>
+              <>
+                <p className="font-semibold text-foreground text-xs leading-tight">{errorPresentation.title}</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground leading-snug">{errorPresentation.message}</p>
+              </>
             ) : godotCompletion ? (
-              <><p className="font-medium">{godotCompletion.title}</p><p className="mt-0.5 text-[11px] text-muted-foreground">{godotCompletion.message}</p></>
-            ) : <span className="break-words">{notice}</span>}
+              <>
+                <p className="font-semibold text-foreground text-xs leading-tight">{godotCompletion.title}</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground leading-snug">{godotCompletion.message}</p>
+              </>
+            ) : (
+              <span className="font-medium text-foreground text-xs break-words">{notice}</span>
+            )}
           </div>
-          {error && errorRecovery && (
-            <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => { setError(null); errorRecovery.run(); }}>
-              {errorRecovery.label}
-            </Button>
-          )}
-          {error && (
-            <Button type="button" variant="ghost" size="sm" onClick={() => void navigator.clipboard.writeText(error).then(() => {
-              setNotice("Technical details copied");
-            }).catch((caught) => reportError(caught, "copy-error"))}>
-              Copy technical details
-            </Button>
-          )}
-          {!error && undoRemoval && (
-            <Button type="button" variant="ghost" size="sm" onClick={() => void api.setAssetsExcluded(undoRemoval.ids, false).then(async () => {
-              setUndoRemoval(null);
-              setNotice(`${undoRemoval.label} restored`);
-              await refresh();
-            }).catch((caught) => reportError(caught, "undo-remove"))}>
-              Undo
-            </Button>
-          )}
-          {!error && !undoRemoval && metadataUndo && (
-            <Button type="button" variant="ghost" size="sm" onClick={() => void metadataUndo.run().then(() => { setNotice("Metadata change undone"); setMetadataUndo(null); }).catch((caught) => reportError(caught, "undo-metadata"))}>
-              {metadataUndo.label}
-            </Button>
-          )}
-          {!error && godotExportNotice?.project.rootPath && (
-            <Button type="button" variant="ghost" size="sm" className="shrink-0" onClick={() => void api.openAsset(godotExportNotice.project.rootPath).catch((caught) => reportError(caught, "open-project"))}>
-              <FolderOpen /> Open project
-            </Button>
-          )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={error ? "Dismiss error" : "Dismiss notification"}
-            onClick={() => {
-              if (error) setError(null);
-              else {
-                setNotice(null);
-                setGodotExportNotice(null);
+          <div className="flex items-center gap-1.5 shrink-0">
+            {error && errorRecovery && (
+              <Button type="button" variant="outline" size="xs" className="h-7 px-2.5 rounded-md text-xs font-medium" onClick={() => { setError(null); errorRecovery.run(); }}>
+                {errorRecovery.label}
+              </Button>
+            )}
+            {error && (
+              <Button type="button" variant="ghost" size="xs" className="h-7 px-2.5 rounded-md text-xs text-muted-foreground hover:text-foreground" onClick={() => void navigator.clipboard.writeText(error).then(() => {
+                setNotice("Technical details copied");
+              }).catch((caught) => reportError(caught, "copy-error"))}>
+                Copy details
+              </Button>
+            )}
+            {!error && undoRemoval && (
+              <Button type="button" variant="outline" size="xs" className="h-7 px-2.5 rounded-md text-xs font-medium" onClick={() => void api.setAssetsExcluded(undoRemoval.ids, false).then(async () => {
                 setUndoRemoval(null);
-              }
-            }}
-          >
-            <X />
-          </Button>
+                setNotice(`${undoRemoval.label} restored`);
+                await refresh();
+              }).catch((caught) => reportError(caught, "undo-remove"))}>
+                Undo
+              </Button>
+            )}
+            {!error && !undoRemoval && metadataUndo && (
+              <Button type="button" variant="outline" size="xs" className="h-7 px-2.5 rounded-md text-xs font-medium" onClick={() => void metadataUndo.run().then(() => { setNotice("Metadata change undone"); setMetadataUndo(null); }).catch((caught) => reportError(caught, "undo-metadata"))}>
+                {metadataUndo.label}
+              </Button>
+            )}
+            {!error && godotExportNotice?.project.rootPath && (
+              <Button type="button" variant="outline" size="xs" className="h-7 gap-1.5 px-2.5 rounded-md text-xs font-medium text-foreground bg-muted/50 hover:bg-muted border-border/80 transition-colors" onClick={() => void api.openAsset(godotExportNotice.project.rootPath).catch((caught) => reportError(caught, "open-project"))}>
+                <FolderOpen className="size-3.5 text-muted-foreground" />
+                <span>Open project</span>
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="size-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+              aria-label={error ? "Dismiss error" : "Dismiss notification"}
+              onClick={() => {
+                if (error) setError(null);
+                else {
+                  setNotice(null);
+                  setGodotExportNotice(null);
+                  setUndoRemoval(null);
+                }
+              }}
+            >
+              <X className="size-3.5" />
+            </Button>
+          </div>
         </div>
       )}
 
@@ -3024,11 +3069,11 @@ function App() {
           setGodotExport(null);
         }
       }}>
-        <DialogContent className="gap-4 sm:max-w-lg">
+        <DialogContent className="gap-4 sm:max-w-2xl">
           <>
               <DialogHeader className="gap-1">
-                <DialogTitle className="text-sm">Review Godot export</DialogTitle>
-                <DialogDescription className="sr-only">Choose model formats and confirm the export contents.</DialogDescription>
+                <DialogTitle className="text-base font-semibold">Review Godot export</DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">Confirm model formats and file destinations before copying assets into your Godot project.</DialogDescription>
               </DialogHeader>
               {!godotExport?.preview ? godotExport?.loading ? (
                 <div className="space-y-3 py-6 text-center" role="status" aria-live="polite">
@@ -3046,65 +3091,68 @@ function App() {
               ) : (
                 <>
                   {godotExport.preview.modelFormats.length > 1 && (
-                    <fieldset className="rounded-md border bg-muted/10 px-3 py-2.5">
-                      <legend className="px-1 text-[11px] font-medium">Model formats</legend>
-                      <div className="flex flex-wrap gap-x-4 gap-y-2">
+                    <fieldset className="min-w-0 w-full rounded-md border bg-muted/10 px-3.5 py-2.5">
+                      <legend className="px-1 text-xs font-medium text-foreground">Model formats</legend>
+                      <div className="flex flex-wrap gap-x-5 gap-y-2">
                         {godotExport.preview.modelFormats.map((format) => {
                           const checked = godotExport.selectedModelFormats.includes(format.extension);
                           const lastSelected = checked && godotExport.selectedModelFormats.length === 1;
                           return (
-                            <label key={format.extension} className="flex min-h-7 items-center gap-2 text-[11px]">
+                            <label key={format.extension} className="flex min-h-7 cursor-pointer select-none items-center gap-2 text-xs">
                               <Checkbox
                                 checked={checked}
                                 disabled={godotExport.loading || godotExport.exporting || lastSelected}
                                 onCheckedChange={(nextChecked) => void updateGodotModelFormat(format.extension, Boolean(nextChecked))}
                                 aria-label={`${checked ? "Exclude" : "Include"} ${format.extension.toUpperCase()} models`}
                               />
-                              <span className="font-medium uppercase">{format.extension}</span>
-                              <span className="text-muted-foreground">{format.count.toLocaleString()}</span>
+                              <span className="font-mono font-medium uppercase">{format.extension}</span>
+                              <span className="text-muted-foreground">({format.count.toLocaleString()})</span>
                             </label>
                           );
                         })}
                       </div>
                       <div className="mt-1.5 flex min-h-4 items-center gap-1.5 text-[11px] text-muted-foreground" aria-live="polite">
-                        {godotExport.loading && <LoaderCircle className="size-3 animate-spin" />}
+                        {godotExport.loading && <LoaderCircle className="size-3.5 animate-spin text-primary" />}
                         <span>{godotExport.loading ? "Updating included files…" : "Required companion files stay included automatically."}</span>
                       </div>
                     </fieldset>
                   )}
-                  <dl className="grid grid-cols-[112px_minmax(0,1fr)] gap-y-2 rounded-md border bg-muted/10 p-3 text-[11px]">
-                    <dt className="text-muted-foreground">Project</dt><dd className="min-w-0" title={collapseHomePath(godotExport.project.rootPath)}><span className="block truncate">{godotExport.project.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{collapseHomePath(godotExport.project.rootPath)}</span></dd>
-                    <dt className="text-muted-foreground">Selected</dt><dd>{godotExport.preview.selected.toLocaleString()} assets</dd>
-                    <dt className="text-muted-foreground">Grouped files</dt><dd>{godotExport.preview.grouped.toLocaleString()} related maps or formats</dd>
-                    <dt className="text-muted-foreground">Dependencies</dt><dd>{godotExport.preview.dependencies.toLocaleString()} referenced files</dd>
-                    <dt className="text-muted-foreground">Files to check</dt><dd>{godotExport.preview.totalFiles.toLocaleString()}</dd>
-                    <dt className="text-muted-foreground">Conflicts</dt><dd>{godotExport.preview.conflicts === 0 ? "None" : `${godotExport.preview.conflicts.toLocaleString()} will receive safe Lootbox names`}</dd>
-                    <dt className="text-muted-foreground">Destination</dt><dd className="font-mono">{godotExport.preview.destination}</dd>
-                    <dt className="text-muted-foreground">Manifest</dt><dd className="font-mono break-all">{godotExport.preview.manifest}</dd>
+                  <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-2 min-w-0 w-full rounded-md border bg-muted/10 p-3.5 text-xs">
+                    <dt className="text-muted-foreground">Project</dt><dd className="min-w-0" title={collapseHomePath(godotExport.project.rootPath)}><span className="block truncate font-medium">{godotExport.project.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{collapseHomePath(godotExport.project.rootPath)}</span></dd>
+                    <dt className="text-muted-foreground">Selected</dt><dd className="min-w-0">{godotExport.preview.selected.toLocaleString()} assets</dd>
+                    <dt className="text-muted-foreground">Grouped files</dt><dd className="min-w-0">{godotExport.preview.grouped.toLocaleString()} related maps or formats</dd>
+                    <dt className="text-muted-foreground">Dependencies</dt><dd className="min-w-0">{godotExport.preview.dependencies.toLocaleString()} referenced files</dd>
+                    <dt className="text-muted-foreground">Files to check</dt><dd className="min-w-0 font-medium">{godotExport.preview.totalFiles.toLocaleString()}</dd>
+                    <dt className="text-muted-foreground">Conflicts</dt><dd className="min-w-0">{godotExport.preview.conflicts === 0 ? "None" : `${godotExport.preview.conflicts.toLocaleString()} will receive safe Lootbox names`}</dd>
+                    <dt className="text-muted-foreground">Destination</dt><dd className="min-w-0 font-mono truncate" title={godotExport.preview.destination}>{godotExport.preview.destination}</dd>
+                    <dt className="text-muted-foreground">Manifest</dt><dd className="min-w-0 font-mono break-all text-[11px]" title={godotExport.preview.manifest}>{godotExport.preview.manifest}</dd>
                   </dl>
                   {godotExport.preview.conflictFiles.length > 0 && (
-                    <div>
-                      <p className="mb-1.5 text-[11px] font-medium">Safe conflict names</p>
-                      <div className="quiet-scrollbar max-h-20 overflow-y-auto rounded-md border bg-background p-2 font-mono text-[11px] text-muted-foreground">
-                        {godotExport.preview.conflictFiles.map((file) => <p key={file} className="truncate" title={file}>{file}</p>)}
+                    <div className="min-w-0 w-full space-y-1.5">
+                      <p className="text-xs font-medium">Safe conflict names</p>
+                      <div className="quiet-scrollbar max-h-24 min-w-0 w-full overflow-y-auto overflow-x-hidden rounded-md border bg-background p-2.5 font-mono text-xs text-muted-foreground">
+                        {godotExport.preview.conflictFiles.map((file) => <p key={file} className="truncate select-text py-0.5" title={file}>{file}</p>)}
                       </div>
                     </div>
                   )}
-                  <div>
-                    <p className="mb-1.5 text-[11px] font-medium">Included files</p>
-                    <div className="quiet-scrollbar max-h-28 overflow-y-auto rounded-md border bg-background p-2 font-mono text-[11px] text-muted-foreground">
-                      {godotExport.preview.files.slice(0, 50).map((file) => <p key={file} className="truncate" title={file}>{file}</p>)}
-                      {godotExport.preview.files.length > 50 && <p className="mt-1 text-foreground">+ {godotExport.preview.files.length - 50} more</p>}
+                  <div className="min-w-0 w-full space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-foreground">Included files</span>
+                      <span className="font-mono text-[11px] text-muted-foreground">{godotExport.preview.files.length.toLocaleString()} total</span>
+                    </div>
+                    <div className="quiet-scrollbar max-h-40 min-w-0 w-full overflow-y-auto overflow-x-hidden rounded-md border bg-background p-2.5 font-mono text-xs text-muted-foreground">
+                      {godotExport.preview.files.slice(0, 100).map((file) => <p key={file} className="truncate select-text py-0.5 hover:text-foreground transition-colors" title={file}>{file}</p>)}
+                      {godotExport.preview.files.length > 100 && <p className="mt-1 font-sans text-xs font-medium text-foreground">+ {godotExport.preview.files.length - 100} more files</p>}
                     </div>
                   </div>
                   {godotExport.exporting && (
-                    <div role="status" aria-live="polite" className="space-y-2">
-                      <p className="text-[11px] text-muted-foreground">Copying files and updating the manifest…</p>
+                    <div role="status" aria-live="polite" className="space-y-2 min-w-0 w-full">
+                      <p className="text-xs text-muted-foreground">Copying files and updating the manifest…</p>
                       <Progress value={null} aria-label="Exporting assets to Godot" />
                     </div>
                   )}
                   {errorContext === "godot-export" && error && (
-                    <p className="text-[11px] text-destructive" role="status">The export can be retried safely; files already copied will be detected as current.</p>
+                    <p className="text-xs text-destructive min-w-0 w-full" role="status">The export can be retried safely; files already copied will be detected as current.</p>
                   )}
                 </>
               )}
@@ -3124,10 +3172,10 @@ function App() {
       <Dialog open={godotProjectRemoval !== null} onOpenChange={(open) => {
         if (!open && !godotProjectRemoval?.removing) setGodotProjectRemoval(null);
       }}>
-        <DialogContent className="gap-4 sm:max-w-lg">
+        <DialogContent className="gap-4 sm:max-w-2xl">
           <DialogHeader className="gap-1">
-            <DialogTitle className="text-sm">Remove from {godotProjectRemoval?.project.name ?? "project"}?</DialogTitle>
-            <DialogDescription className="text-xs">
+            <DialogTitle className="text-base font-semibold">Remove from {godotProjectRemoval?.project.name ?? "project"}?</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
               Lootbox will remove its exported copies from this project. Original files in your asset packs stay untouched.
             </DialogDescription>
           </DialogHeader>
@@ -3138,35 +3186,38 @@ function App() {
             </div>
           ) : (
             <>
-              <dl className="grid grid-cols-[128px_minmax(0,1fr)] gap-y-2 rounded-md border bg-muted/10 p-3 text-[11px]">
-                <dt className="text-muted-foreground">Selected</dt><dd>{godotProjectRemoval.preview.selected.toLocaleString()} {godotProjectRemoval.preview.selected === 1 ? "asset" : "assets"}</dd>
-                <dt className="text-muted-foreground">Files removed</dt><dd>{godotProjectRemoval.preview.removeFiles.length.toLocaleString()}</dd>
-                <dt className="text-muted-foreground">Modified files kept</dt><dd>{godotProjectRemoval.preview.modifiedFiles.length.toLocaleString()}</dd>
-                <dt className="text-muted-foreground">Shared files kept</dt><dd>{godotProjectRemoval.preview.sharedFiles.length.toLocaleString()}</dd>
-                <dt className="text-muted-foreground">Missing records cleaned</dt><dd>{godotProjectRemoval.preview.missingFiles.length.toLocaleString()}</dd>
-                <dt className="text-muted-foreground">Location</dt><dd className="font-mono">{godotProjectRemoval.preview.destination}</dd>
+              <dl className="grid grid-cols-[130px_minmax(0,1fr)] gap-y-2 min-w-0 w-full rounded-md border bg-muted/10 p-3.5 text-xs">
+                <dt className="text-muted-foreground">Selected</dt><dd className="min-w-0">{godotProjectRemoval.preview.selected.toLocaleString()} {godotProjectRemoval.preview.selected === 1 ? "asset" : "assets"}</dd>
+                <dt className="text-muted-foreground">Files removed</dt><dd className="min-w-0 font-medium">{godotProjectRemoval.preview.removeFiles.length.toLocaleString()}</dd>
+                <dt className="text-muted-foreground">Modified files kept</dt><dd className="min-w-0">{godotProjectRemoval.preview.modifiedFiles.length.toLocaleString()}</dd>
+                <dt className="text-muted-foreground">Shared files kept</dt><dd className="min-w-0">{godotProjectRemoval.preview.sharedFiles.length.toLocaleString()}</dd>
+                <dt className="text-muted-foreground">Missing records cleaned</dt><dd className="min-w-0">{godotProjectRemoval.preview.missingFiles.length.toLocaleString()}</dd>
+                <dt className="text-muted-foreground">Location</dt><dd className="min-w-0 font-mono truncate" title={godotProjectRemoval.preview.destination}>{godotProjectRemoval.preview.destination}</dd>
               </dl>
               {godotProjectRemoval.preview.modifiedFiles.length > 0 && (
-                <div className="flex gap-2 rounded-md border bg-muted/10 p-2.5 text-[11px]">
-                  <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                <div className="flex gap-2 rounded-md border bg-muted/10 p-2.5 text-xs">
+                  <AlertCircle className="mt-0.5 size-4 shrink-0 text-primary" />
                   <p><span className="font-medium">Project edits are protected.</span> Modified files stay in place, and Lootbox stops tracking them.</p>
                 </div>
               )}
               {godotProjectRemoval.preview.sharedFiles.length > 0 && (
-                <p className="text-[11px] text-muted-foreground">Shared files remain tracked because other exported assets still need them.</p>
+                <p className="text-xs text-muted-foreground">Shared files remain tracked because other exported assets still need them.</p>
               )}
-              <div>
-                <p className="mb-1.5 text-[11px] font-medium">Unchanged files removed</p>
-                <div className="quiet-scrollbar max-h-28 overflow-y-auto rounded-md border bg-background p-2 font-mono text-[11px] text-muted-foreground">
+              <div className="min-w-0 w-full space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-foreground">Unchanged files removed</span>
+                  <span className="font-mono text-[11px] text-muted-foreground">{godotProjectRemoval.preview.removeFiles.length.toLocaleString()} total</span>
+                </div>
+                <div className="quiet-scrollbar max-h-40 min-w-0 w-full overflow-y-auto overflow-x-hidden rounded-md border bg-background p-2.5 font-mono text-xs text-muted-foreground">
                   {godotProjectRemoval.preview.removeFiles.length > 0
-                    ? godotProjectRemoval.preview.removeFiles.slice(0, 50).map((file) => <p key={file} className="truncate" title={file}>{file}</p>)
-                    : <p className="font-sans">No unchanged files need deletion.</p>}
-                  {godotProjectRemoval.preview.removeFiles.length > 50 && <p className="mt-1 text-foreground">+ {godotProjectRemoval.preview.removeFiles.length - 50} more</p>}
+                    ? godotProjectRemoval.preview.removeFiles.slice(0, 100).map((file) => <p key={file} className="truncate select-text py-0.5 hover:text-foreground transition-colors" title={file}>{file}</p>)
+                    : <p className="font-sans py-0.5">No unchanged files need deletion.</p>}
+                  {godotProjectRemoval.preview.removeFiles.length > 100 && <p className="mt-1 font-sans text-xs font-medium text-foreground">+ {godotProjectRemoval.preview.removeFiles.length - 100} more files</p>}
                 </div>
               </div>
               {godotProjectRemoval.removing && (
-                <div role="status" aria-live="polite" className="space-y-2">
-                  <p className="text-[11px] text-muted-foreground">Removing tracked copies and updating the manifest…</p>
+                <div role="status" aria-live="polite" className="space-y-2 min-w-0 w-full">
+                  <p className="text-xs text-muted-foreground">Removing tracked copies and updating the manifest…</p>
                   <Progress value={null} aria-label="Removing assets from Godot project" />
                 </div>
               )}
@@ -3190,15 +3241,15 @@ function App() {
           setReviewSelectionFilter("");
         }
       }}>
-        <DialogContent className="gap-3 sm:max-w-lg">
+        <DialogContent className="gap-3 sm:max-w-2xl">
           <DialogHeader className="gap-1">
-            <DialogTitle className="text-sm">Review selection</DialogTitle>
-            <DialogDescription className="text-xs">{selectionSummary}. Inspector changes apply to every item below.</DialogDescription>
+            <DialogTitle className="text-base font-semibold">Review selection</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">{selectionSummary}. Inspector changes apply to every item below.</DialogDescription>
           </DialogHeader>
 
           {/* Instant filter and bulk remove matching */}
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
+          <div className="flex items-center gap-2 min-w-0 w-full">
+            <div className="relative flex-1 min-w-0">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={reviewSelectionFilter}
@@ -3207,7 +3258,7 @@ function App() {
                   setReviewSelectionLimit(250);
                 }}
                 placeholder="Filter by name, path, pack, or type..."
-                className="h-8 rounded-sm pl-8 text-xs"
+                className="h-8 rounded-sm pl-8 text-xs w-full"
                 aria-label="Filter selection"
               />
               {reviewSelectionFilter && (
@@ -3240,7 +3291,7 @@ function App() {
             )}
           </div>
 
-          <div className="quiet-scrollbar max-h-80 overflow-y-auto rounded-md border" role="list" aria-label="Selected assets">
+          <div className="quiet-scrollbar max-h-80 min-w-0 w-full overflow-y-auto rounded-md border" role="list" aria-label="Selected assets">
             {filteredReviewAssetIds.length === 0 ? (
               <div className="p-6 text-center text-xs text-muted-foreground">
                 No selected assets match &ldquo;{reviewSelectionFilter}&rdquo;
@@ -3251,14 +3302,14 @@ function App() {
                 const path = item?.relativePath ?? selectedPathCacheRef.current.get(id) ?? `Asset ${id}`;
                 const name = item?.name ?? path.split(/[\\/]/).at(-1) ?? `Asset ${id}`;
                 return (
-                  <div key={id} role="listitem" className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)_28px] items-center gap-3 border-b px-3 py-2 last:border-b-0">
+                  <div key={id} role="listitem" className="grid grid-cols-[minmax(140px,0.4fr)_minmax(0,1fr)_28px] items-center gap-3 border-b px-3 py-2 last:border-b-0">
                     <div className="min-w-0">
                       <p className="truncate text-xs font-medium">{name}</p>
                       <p className="truncate text-[11px] text-muted-foreground">
                         {item ? `${item.packName} · ${typeLabels[item.assetType]}` : "Result not currently loaded"}
                       </p>
                     </div>
-                    <p className="self-center truncate font-mono text-[11px] text-muted-foreground" title={path}>{path}</p>
+                    <p className="self-center truncate font-mono text-xs text-muted-foreground" title={path}>{path}</p>
                     <Button type="button" variant="ghost" size="icon-xs" className="rounded-sm text-muted-foreground hover:text-destructive" onClick={() => deselectReviewedAsset(id)} aria-label={`Remove ${name} from selection`} title="Remove from selection"><X /></Button>
                   </div>
                 );
@@ -3473,15 +3524,15 @@ function App() {
         setSettingsOpen(open);
         if (open) setSettingsMessage("");
       }}>
-        <DialogContent className="gap-4 sm:max-w-xl">
+        <DialogContent className="gap-4 sm:max-w-2xl">
           <DialogHeader className="gap-1">
-            <DialogTitle className="text-sm">Maintenance</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Maintenance</DialogTitle>
           </DialogHeader>
-          <section className="space-y-3 pb-4">
+          <section className="space-y-3 min-w-0 w-full pb-4">
             <div className="mb-2 flex items-start gap-2.5">
               <DatabaseBackup className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <div><h3 className="text-xs font-medium">Metadata backups</h3>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">Five rotating safety backups are maintained automatically.</p></div>
+              <p className="mt-0.5 text-xs text-muted-foreground">Five rotating safety backups are maintained automatically.</p></div>
             </div>
             <div className="flex flex-wrap gap-2 pl-6.5">
               <Button type="button" variant="outline" size="sm" className="rounded-sm text-xs" onClick={() => void (async () => {
@@ -3497,11 +3548,11 @@ function App() {
               })().catch((caught) => reportError(caught, "backup-restore-picker"))}>Restore backup</Button>
             </div>
           </section>
-          <section className="space-y-3 border-t py-4">
+          <section className="space-y-3 min-w-0 w-full border-t pt-4 pb-4">
             <div className="mb-2 flex items-start gap-2.5">
               <HardDrive className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <div><h3 className="text-xs font-medium">Preview cache</h3>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">
+            <p className="mt-0.5 text-xs text-muted-foreground">
               {cacheStatus ? `${cacheStatus.thumbnailFiles.toLocaleString()} files · ${formatBytes(cacheStatus.thumbnailBytes)} · ${cacheStatus.orphanFiles.toLocaleString()} orphaned` : "Loading…"}
             </p></div></div>
             <div className="flex flex-wrap gap-2 pl-6.5">
@@ -3517,16 +3568,16 @@ function App() {
               <Button type="button" variant="outline" size="sm" className="rounded-sm text-xs text-destructive" onClick={() => setConfirmClearCache(true)}>Clear all previews</Button>
             </div>
           </section>
-          <section className="space-y-2 border-t pt-4">
+          <section className="space-y-2 min-w-0 w-full border-t pt-4">
             <div className="flex items-center justify-between">
               <h3 className="flex items-center gap-2 text-xs font-medium"><Activity className="size-3.5 text-muted-foreground" /> Diagnostics</h3>
               <Button type="button" variant="ghost" size="sm" className="rounded-sm text-xs" onClick={() => void navigator.clipboard.writeText(diagnostics.map((entry) => `${new Date(entry.timestamp * 1000).toISOString()} [${entry.context}] ${entry.message}`).join("\n")).then(() => setNotice("Diagnostics copied")).catch((caught) => reportError(caught, "copy-diagnostics"))}>Copy details</Button>
             </div>
-            <div className="quiet-scrollbar max-h-28 overflow-y-auto rounded-sm border bg-muted/10 p-2 font-mono text-[11px] text-muted-foreground">
+            <div className="quiet-scrollbar max-h-32 min-w-0 w-full overflow-y-auto rounded-sm border bg-muted/10 p-2 font-mono text-xs text-muted-foreground">
               {diagnostics.length === 0 ? "No errors recorded this session." : diagnostics.slice(-20).reverse().map((entry, index) => <div key={`${entry.timestamp}-${index}`} className="mb-1 break-words">[{entry.context}] {entry.message}</div>)}
             </div>
           </section>
-          {settingsMessage && <p className="text-[11px] text-primary" role="status" aria-live="polite">{settingsMessage}</p>}
+          {settingsMessage && <p className="text-xs text-primary" role="status" aria-live="polite">{settingsMessage}</p>}
         </DialogContent>
       </Dialog>
 
