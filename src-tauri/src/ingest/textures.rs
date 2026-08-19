@@ -72,7 +72,18 @@ pub fn is_resolution_directory(value: &str) -> bool {
     })
 }
 
-pub fn texture_stem_and_role(stem: &str) -> (String, Option<&'static str>) {
+pub fn texture_has_prefix(token: &str) -> bool {
+    token.starts_with("t_")
+        || token.starts_with("tx_")
+        || token.starts_with("tex_")
+        || token.starts_with("m_")
+        || token.starts_with("mat_")
+}
+
+pub fn texture_stem_and_role_with_context(
+    stem: &str,
+    in_texture_directory: bool,
+) -> (String, Option<&'static str>) {
     let stem = normalized_texture_token(stem);
     if let Some(role) = texture_map_role(&stem) {
         return (String::new(), Some(role));
@@ -123,24 +134,35 @@ pub fn texture_stem_and_role(stem: &str) -> (String, Option<&'static str>) {
             }
         }
     }
-    // Common engine conventions such as T_Brick_D / T_Brick_N. Single-letter
-    // roles are only accepted when there is a non-empty base to reduce false positives.
-    const SHORT_SUFFIXES: &[(&str, &str)] = &[
-        ("d", "color"),
-        ("n", "normal"),
-        ("r", "roughness"),
-        ("m", "metalness"),
-        ("h", "height"),
-        ("e", "emissive"),
-    ];
-    for (suffix, role) in SHORT_SUFFIXES {
-        if let Some(base) = stem.strip_suffix(&format!("_{suffix}")) {
-            if !base.is_empty() {
-                return (base.to_string(), Some(*role));
+    // Single-letter suffixes such as T_Brick_D / T_Brick_N (engine conventions)
+    // are only recognized if the asset has an explicit texture/material prefix
+    // (e.g. T_, TX_, TEX_, M_, MAT_) or is located inside a texture/material directory.
+    // This prevents lettered sprite collections (keyboard_a..z, button_a..z, etc.)
+    // from falsely matching diffuse, normal, roughness, emissive roles.
+    if in_texture_directory || texture_has_prefix(&stem) {
+        const SHORT_SUFFIXES: &[(&str, &str)] = &[
+            ("d", "color"),
+            ("n", "normal"),
+            ("r", "roughness"),
+            ("m", "metalness"),
+            ("h", "height"),
+            ("e", "emissive"),
+        ];
+        for (suffix, role) in SHORT_SUFFIXES {
+            if let Some(base) = stem.strip_suffix(&format!("_{suffix}")) {
+                if !base.is_empty() {
+                    return (base.to_string(), Some(*role));
+                }
             }
         }
     }
     (stem, None)
+}
+
+pub fn texture_stem_and_role(stem: &str) -> (String, Option<&'static str>) {
+    let normalized = normalized_texture_token(stem);
+    let has_prefix = texture_has_prefix(&normalized);
+    texture_stem_and_role_with_context(&normalized, has_prefix)
 }
 
 pub fn texture_resolution(relative_path: &Path) -> Option<String> {
@@ -184,7 +206,8 @@ pub fn texture_group_key(relative_path: &Path) -> String {
         .or_else(|| relative_path.file_name())
         .map(|value| value.to_string_lossy())
         .unwrap_or_default();
-    let base = texture_stem_and_role(&stem).0;
+    let (_, texture_directory) = texture_directory_evidence(relative_path);
+    let base = texture_stem_and_role_with_context(&stem, texture_directory).0;
     if !base.is_empty() {
         parts.push(base);
     }
@@ -230,11 +253,11 @@ pub fn recompute_texture_groups(connection: &Connection, pack_id: Option<i64>) -
             continue;
         }
         let relative_path = Path::new(relative_path);
-        let (directory_role, _) = texture_directory_evidence(relative_path);
+        let (directory_role, texture_directory) = texture_directory_evidence(relative_path);
         let stem_role = relative_path
             .file_stem()
             .or_else(|| relative_path.file_name())
-            .and_then(|stem| texture_stem_and_role(&stem.to_string_lossy()).1);
+            .and_then(|stem| texture_stem_and_role_with_context(&stem.to_string_lossy(), texture_directory).1);
         let evidence = group_evidence
             .entry(texture_group_key(relative_path))
             .or_insert_with(|| (HashSet::new(), 0));
@@ -267,7 +290,7 @@ pub fn recompute_texture_groups(connection: &Connection, pack_id: Option<i64>) -
         let stem_role = relative_path
             .file_stem()
             .or_else(|| relative_path.file_name())
-            .and_then(|stem| texture_stem_and_role(&stem.to_string_lossy()).1);
+            .and_then(|stem| texture_stem_and_role_with_context(&stem.to_string_lossy(), texture_directory).1);
         let group = group_evidence.get(&group_key);
         let sibling_set = group
             .is_some_and(|(roles, count)| roles.len() >= 2 || (*count >= 2 && !roles.is_empty()));

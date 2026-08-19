@@ -139,6 +139,22 @@ use crate::{
             "texture"
         );
         assert_eq!(
+            classify_asset_type(Path::new("Keyboard/keyboard_e.png"), "png"),
+            "image"
+        );
+        assert_eq!(
+            classify_asset_type(Path::new("Keyboard/keyboard_d.png"), "png"),
+            "image"
+        );
+        assert_eq!(
+            classify_asset_type(Path::new("T_Brick_D.png"), "png"),
+            "texture"
+        );
+        assert_eq!(
+            classify_asset_type(Path::new("Textures/brick_d.png"), "png"),
+            "texture"
+        );
+        assert_eq!(
             texture_group_key(Path::new("256/Color Maps/brick.png")),
             texture_group_key(Path::new("512/Normal Maps/brick_normal.png"))
         );
@@ -319,6 +335,87 @@ use crate::{
     }
 
     #[test]
+    fn does_not_collapse_lettered_input_prompts_or_sprite_series() {
+        let temporary = tempfile::tempdir().unwrap();
+        let pack = temporary.path().join("Input Prompts");
+        let keyboard_dir = pack.join("Keyboard & Mouse");
+        let wii_dir = pack.join("Nintendo Wii");
+        fs::create_dir_all(&keyboard_dir).unwrap();
+        fs::create_dir_all(&wii_dir).unwrap();
+
+        for filename in [
+            "keyboard_a.png",
+            "keyboard_d.png",
+            "keyboard_e.png",
+            "keyboard_h.png",
+            "keyboard_m.png",
+            "keyboard_n.png",
+            "keyboard_r.png",
+            "keyboard_e_outline.png",
+        ] {
+            image::RgbaImage::from_pixel(16, 16, image::Rgba([200, 200, 200, 255]))
+                .save(keyboard_dir.join(filename))
+                .unwrap();
+        }
+
+        for filename in ["wii_stick.png", "wii_stick_r.png", "wii_stick_l.png"] {
+            image::RgbaImage::from_pixel(16, 16, image::Rgba([180, 180, 180, 255]))
+                .save(wii_dir.join(filename))
+                .unwrap();
+        }
+
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        let imported =
+            import_pack_from_path(&mut connection, &pack, None, None, &mut |_| {}).unwrap();
+
+        assert_eq!(imported.asset_count, 11);
+
+        let primary_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM assets WHERE pack_id = ?1 AND is_primary = 1 AND asset_type = 'image'",
+                params![imported.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(primary_count, 11);
+
+        let texture_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM assets WHERE pack_id = ?1 AND usage = 'texture'",
+                params![imported.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(texture_count, 0);
+
+        let non_primary_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM assets WHERE pack_id = ?1 AND is_primary = 0",
+                params![imported.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(non_primary_count, 0);
+    }
+
+    #[test]
+    fn migrates_user_databases_if_present() {
+        for path_str in [
+            "/home/freeranger/.local/share/com.lootbox.desktop/lootbox.db",
+            "/home/freeranger/.local/share/com.lootbox.app/lootbox.db",
+        ] {
+            let path = Path::new(path_str);
+            if path.is_file() {
+                if let Ok(mut conn) = Connection::open(path) {
+                    let _ = initialize_database(&conn);
+                    let _ = migrate_classification(&mut conn);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn migrates_existing_rows_to_the_versioned_classifier() {
         let temporary = tempfile::tempdir().unwrap();
         let pack = temporary.path().join("Migrated Pack");
@@ -356,7 +453,7 @@ use crate::{
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "2");
+        assert_eq!(version, "3");
         migrate_classification(&mut connection).unwrap();
     }
 

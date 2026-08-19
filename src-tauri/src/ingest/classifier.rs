@@ -34,7 +34,7 @@ pub fn classify_asset_type(relative_path: &Path, extension: &str) -> &'static st
     let stem_role = relative_path
         .file_stem()
         .or_else(|| relative_path.file_name())
-        .and_then(|stem| texture_stem_and_role(&stem.to_string_lossy()).1);
+        .and_then(|stem| texture_stem_and_role_with_context(&stem.to_string_lossy(), texture_directory).1);
     if asset_type == "image"
         && (texture_directory || directory_role.is_some() || stem_role.is_some())
     {
@@ -380,7 +380,7 @@ pub fn recompute_asset_dependencies(connection: &Connection, pack_id: Option<i64
 }
 
 pub fn migrate_classification(connection: &mut Connection) -> Result<()> {
-    const CLASSIFICATION_VERSION: &str = "2";
+    const CLASSIFICATION_VERSION: &str = "3";
     let current_version = connection
         .query_row(
             "SELECT value FROM app_metadata WHERE key = 'classification_version'",
